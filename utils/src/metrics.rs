@@ -63,6 +63,7 @@ fn request_size_index(size: usize) -> usize {
 // <=1ms, <=20ms, <=50ms, <=100ms, <=500ms, <=1s, <=2s, >2s
 const READ_LATENCY_RANGE_MAX: usize = 8;
 
+//[maxing COMMENT]: 这个技巧好
 fn latency_millis_range_index(elapsed: u64) -> usize {
     match elapsed {
         _ if elapsed <= 1 => 0,

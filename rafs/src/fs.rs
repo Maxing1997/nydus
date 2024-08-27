@@ -335,6 +335,7 @@ impl Rafs {
         let root_ino = self.root_ino();
 
         let _ = std::thread::spawn(move || {
+            //[maxing COMMENT]: 这里进行prefetch
             Self::do_prefetch(root_ino, reader, prefetch_files, prefetch_all, sb, device);
         });
     }
@@ -473,6 +474,7 @@ impl Rafs {
         }
     }
 
+    //[maxing COMMENT]: 转变file list为inodes列表
     fn convert_file_list(files: &[PathBuf], sb: &Arc<RafsSuper>) -> Vec<Inode> {
         let mut inodes = Vec::<Inode>::with_capacity(files.len());
 
