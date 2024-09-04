@@ -366,13 +366,16 @@ impl FsIoStats {
     pub fn latency_end(&self, start: &Option<SystemTime>, fop: StatsFop) {
         if let Some(start) = start {
             if let Ok(d) = SystemTime::elapsed(start) {
+                //[maxing COMMENT]: 得到ms的时间戳。
                 let elapsed = saturating_duration_micros(&d);
+                //[maxing COMMENT]: 分布增加
                 self.read_latency_dist[latency_micros_range_index(elapsed)].inc();
                 self.fop_cumulative_latency_total[fop as usize].add(elapsed);
             }
         }
     }
 
+    //[maxing COMMENT]: 导出数据
     fn export_files_stats(&self) -> Result<String, MetricsError> {
         serde_json::to_string(
             self.file_counters
@@ -698,6 +701,7 @@ fn saturating_duration_millis(d: &Duration) -> u64 {
     }
 }
 
+//[maxing COMMENT]: 转化为ms
 fn saturating_duration_micros(d: &Duration) -> u64 {
     let d_secs = d.as_secs();
     if d_secs == 0 {

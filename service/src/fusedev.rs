@@ -590,6 +590,7 @@ pub fn create_fuse_daemon(
         || api_sock.is_none()
     {
         if let Some(cmd) = mount_cmd {
+            //[maxing COMMENT]: 这里进行挂载。
             daemon.service.mount(cmd).map_err(|e| {
                 error!("service mount error: {}", &e);
                 eother!(e)

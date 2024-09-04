@@ -11,6 +11,7 @@ all-install: install contrib-install
 all-clean: clean contrib-clean
 
 TEST_WORKDIR_PREFIX ?= "/tmp"
+# 安装位置
 INSTALL_DIR_PREFIX ?= "/usr/local/bin"
 DOCKER ?= "true"
 
@@ -25,6 +26,7 @@ UNAME_M := $(shell uname -m)
 UNAME_S := $(shell uname -s)
 STATIC_TARGET = $(UNAME_M)-unknown-linux-musl
 ifeq ($(UNAME_S),Linux)
+	# 这里设置的CARGO_COMMON，默认编译virtiofs
 	CARGO_COMMON += --features=virtiofs
 ifeq ($(UNAME_M),ppc64le)
 	STATIC_TARGET = powerpc64le-unknown-linux-gnu
@@ -97,6 +99,7 @@ static-release: .clean_libz_sys .musl_target .format .release_version build
 clean:
 	${CARGO} clean
 
+# 安装，可以看到nydusd的产物位置
 install: release
 	@sudo mkdir -m 755 -p $(INSTALL_DIR_PREFIX)
 	@sudo install -m 755 target/release/nydusd $(INSTALL_DIR_PREFIX)/nydusd
@@ -152,6 +155,7 @@ contrib-lint: nydusify-lint ctr-remote-lint \
 contrib-clean: nydusify-clean ctr-remote-clean \
 				nydus-overlayfs-clean
 
+# contrib的安装位置
 contrib-install:
 	@sudo mkdir -m 755 -p $(INSTALL_DIR_PREFIX)
 	@sudo install -m 755 contrib/ctr-remote/bin/ctr-remote $(INSTALL_DIR_PREFIX)/ctr-remote

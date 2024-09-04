@@ -1094,6 +1094,8 @@ impl<'a> RafsStore for RafsV5InodeWrapper<'a> {
 /// Rafs v5 chunk on disk metadata.
 #[repr(C)]
 #[derive(Default, Clone, Copy, Debug)]
+//[maxing comment]: chunk in blob, blob存放file的内容。
+//有多种方式可以实现chunk，比如blockid就有多种实现。这里说的是从bootstrap读取内容。
 pub struct RafsV5ChunkInfo {
     /// sha256(chunk), [char; RAFS_SHA256_LENGTH]
     pub block_id: RafsDigest, // 32
