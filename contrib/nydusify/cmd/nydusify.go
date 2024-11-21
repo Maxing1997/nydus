@@ -1161,6 +1161,54 @@ func main() {
 			},
 		},
 		{
+			Name:  "optimize",
+			Usage: "Covert and push a new optimized nydus image",
+			Flags: []cli.Flag{
+				&cli.StringFlag{
+					Name:     "source",
+					Required: true,
+					Usage:    "Source (Nydus) image reference",
+					EnvVars:  []string{"SOURCE"},
+				},
+				&cli.StringFlag{
+					Name:     "target",
+					Required: true,
+					Usage:    "Target (Nydus) image reference",
+					EnvVars:  []string{"TARGET"},
+				},
+				&cli.StringFlag{
+					Name:    "policy",
+					Value:   "separated-prefetch-blob",
+					Usage:   "Specify the optimizing way",
+					EnvVars: []string{"OPTIMIZE_POLICY"},
+				},
+				&cli.StringFlag{
+					Name:     "prefetch-files",
+					Required: false,
+					Usage:    "Specify the prefetch files to build preftech blobs",
+					EnvVars:  []string{"PREFETCH_FILES"},
+				},
+				&cli.StringFlag{
+					Name:    "nydus-image",
+					Value:   "nydus-image",
+					Usage:   "Path to the nydus-image binary, default to search in PATH",
+					EnvVars: []string{"NYDUS_IMAGE"},
+				},
+			},
+			Action: func(c *cli.Context) error {
+				setupLogLevel(c)
+
+				if p, err = packer.New(.Opt{
+					LogLevel:       logrus.GetLevel(),
+					NydusImagePath: c.String("nydus-image"),
+					OutputDir:      c.String("output-dir"),
+					BackendConfig:  backendConfig,
+				}); err != nil {
+					return err
+				}
+			},
+		},
+		{
 			Name:  "commit",
 			Usage: "Create and push a new nydus image from a container's changes that use a nydus image",
 			Flags: []cli.Flag{
