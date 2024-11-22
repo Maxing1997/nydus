@@ -27,9 +27,8 @@ use nydus_storage::meta::BatchContextGenerator;
 use nydus_storage::meta::BlobChunkInfoV1Ondisk;
 use nydus_utils::compress;
 use sha2::Digest;
-use std::fs::File;
-use std::io::Read;
-use std::io::Seek;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, Write};
 use std::mem::size_of;
 use std::sync::Arc;
 pub struct OptimizePrefetch {}
@@ -76,6 +75,7 @@ impl OptimizePrefetch {
         blob_table: &mut RafsV6BlobTable,
         blobs_dir_path: PathBuf,
         prefetch_nodes: Vec<TreeNode>,
+        output_path: Option<&Path>,
     ) -> Result<()> {
         // create a new blob for prefetch layer
         let blob_layer_num = blob_table.entries.len();
@@ -96,6 +96,15 @@ impl OptimizePrefetch {
         Self::dump_blob(ctx, blob_table, &mut blob_state)?;
 
         debug!("prefetch blob id: {}", ctx.blob_id);
+        if let Some(ref f) = output_path {
+            let mut w = OpenOptions::new()
+                .truncate(true)
+                .create(true)
+                .write(true)
+                .open(f)
+                .with_context(|| format!("can not open output file {}", f.display()))?;
+            w.write_all(ctx.blob_id.as_bytes())?;
+        }
 
         Self::build_dump_bootstrap(tree, ctx, bootstrap_mgr, blob_table)?;
         Ok(())

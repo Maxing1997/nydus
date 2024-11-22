@@ -560,6 +560,18 @@ fn prepare_cmd_args(bti_string: &'static str) -> App {
                     .help(
                         "Directory for localfs storage backend, hosting data blobs and cache files",
                     ),
+            )
+            .arg(
+                Arg::new("new-bootstrap")
+                    .long("new-bootstrap")
+                    .short('N')
+                    .help("Output path of the new bootstrap"),
+            )
+            .arg(
+                Arg::new("output-path")
+                    .long("output-path")
+                    .short('o')
+                    .help("Output path of for save hot blob id"),
             ),
     );
 
@@ -1675,6 +1687,8 @@ impl Command {
         let prefetch_files = Self::get_prefetch_files(matches)?;
         prefetch_files.iter().for_each(|f| println!("{}", f));
         let bootstrap_path = Self::get_bootstrap(matches)?;
+        let new_bootstrap = Self::get_new_bootstrap(matches)?;
+        let output_path = Self::get_output_path(matches)?;
         let config = Self::get_configuration(matches)?;
         config.internal.set_blob_accessible(true);
         let mut build_ctx = BuildContext {
@@ -1695,7 +1709,12 @@ impl Command {
             }
         }
 
-        let bootstrap_path = ArtifactStorage::SingleFile(PathBuf::from("optimized_bootstrap"));
+        let bootstrap_path = if let Some(ref f) = new_bootstrap {
+            ArtifactStorage::SingleFile(PathBuf::from(f))
+        } else {
+            ArtifactStorage::SingleFile(PathBuf::from("optimized_bootstrap"))
+        };
+
         let mut bootstrap_mgr = BootstrapManager::new(Some(bootstrap_path), None);
         let blobs = sb.superblock.get_blob_infos();
         let mut rafsv6table = RafsV6BlobTable::new();
@@ -1710,6 +1729,7 @@ impl Command {
             &mut rafsv6table,
             blobs_dir_path.to_path_buf(),
             prefetch_nodes,
+            output_path,
         )
         .with_context(|| "Failed to generate prefetch bootstrap")?;
 
@@ -1823,6 +1843,13 @@ impl Command {
         }
     }
 
+    fn get_new_bootstrap(matches: &ArgMatches) -> Result<Option<&Path>> {
+        match matches.get_one::<String>("new-bootstrap") {
+            Some(s) => Ok(Some(Path::new(s))),
+            None => Ok(None),
+        }
+    }
+
     fn get_prefetch_files(matches: &ArgMatches) -> Result<Vec<String>> {
         match matches.get_one::<String>("prefetch-files") {
             Some(v) => {
@@ -1839,6 +1866,13 @@ impl Command {
                 Ok(prefetch_files)
             }
             None => bail!("missing parameter `prefetch-files`"),
+        }
+    }
+
+    fn get_output_path(matches: &ArgMatches) -> Result<Option<&Path>> {
+        match matches.get_one::<String>("output-path") {
+            Some(s) => Ok(Some(Path::new(s))),
+            None => Ok(None),
         }
     }
 
