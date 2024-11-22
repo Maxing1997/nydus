@@ -2,6 +2,8 @@ package optimizer
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -21,8 +23,9 @@ type BuildOption struct {
 	PrefetchFilesPath string
 	BootstrapPath     string
 	BlobDir           string
-	//OutputJSONPath    string
-	Timeout *time.Duration
+	NewBootstrapPath  string
+	OutputPath        string
+	Timeout           *time.Duration
 }
 
 type outputJSON struct {
@@ -30,7 +33,7 @@ type outputJSON struct {
 	HotBlob          string
 }
 
-func Build(option BuildOption) (outputJSON, error) {
+func Build(option BuildOption) (string, error) {
 	args := []string{
 		"optimize",
 		"--log-level",
@@ -41,8 +44,10 @@ func Build(option BuildOption) (outputJSON, error) {
 		option.BootstrapPath,
 		"--blob-dir",
 		option.BlobDir,
-		//"--output-json",
-		//option.OutputJSONPath,
+		"--new-bootstrap",
+		option.NewBootstrapPath,
+		"--output-path",
+		option.OutputPath,
 	}
 
 	ctx := context.Background()
@@ -63,19 +68,15 @@ func Build(option BuildOption) (outputJSON, error) {
 		} else {
 			logrus.WithError(err).Errorf("fail to run %v %+v", option.BuilderPath, args)
 		}
-		return outputJSON{}, errors.Wrap(err, "run merge command")
+		return "", errors.Wrap(err, "run merge command")
 	}
-	return outputJSON{}, nil
 
-	//outputBytes, err := os.ReadFile(option.OutputJSONPath)
-	//if err != nil {
-	//	return outputJSON{}, errors.Wrapf(err, "read file %s", option.OutputJSONPath)
-	//}
-	//var output outputJSON
-	//err = json.Unmarshal(outputBytes, &output)
-	//if err != nil {
-	//	return outputJSON{}, errors.Wrapf(err, "unmarshal output json file %s", option.OutputJSONPath)
-	//}
-	//
-	//return output, nil
+	BlobId, err := os.ReadFile(option.OutputPath)
+	if err != nil {
+		fmt.Printf("failed to read file: %v\n", err)
+		return "", nil
+	}
+
+	fmt.Printf("File content: %s\n", BlobId)
+	return string(BlobId), nil
 }

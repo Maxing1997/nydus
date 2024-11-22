@@ -105,7 +105,8 @@ func Optimize(ctx context.Context, opt Opt) error {
 		PrefetchFilesPath: opt.PrefetchFilesPath,
 		BootstrapPath:     target,
 		BlobDir:           opt.WorkDir,
-		//OutputJSONPath:    filepath.Join(tmpDir, "output.json"),
+		NewBootstrapPath:  filepath.Join(tmpDir, "optimized_bootstrap"),
+		OutputPath:        filepath.Join(tmpDir, "output-blob-id"),
 	}
 	fmt.Println(builderOpt)
 	if _, err := Build(builderOpt); err != nil {
