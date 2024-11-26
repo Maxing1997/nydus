@@ -11,11 +11,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/optimizer"
 	"io"
 	"os"
 	"runtime"
 	"strings"
+
+	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/optimizer"
 
 	"github.com/containerd/containerd/reference/docker"
 	"github.com/distribution/reference"
@@ -1227,9 +1228,7 @@ func main() {
 				setupLogLevel(c)
 
 				pushChunkSize, err := humanize.ParseBytes(c.String("push-chunk-size"))
-				fmt.Printf("debug1")
 				if err != nil {
-					fmt.Printf("debug2")
 					return errors.Wrap(err, "invalid --push-chunk-size option")
 				}
 				if pushChunkSize > 0 {
