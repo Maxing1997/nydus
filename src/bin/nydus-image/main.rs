@@ -38,7 +38,7 @@ use nydus_builder::{
     TarballBuilder, Tree, TreeNode, WhiteoutSpec,
 };
 
-use nydus_rafs::metadata::layout::v6::RafsV6BlobTable;
+use nydus_rafs::metadata::layout::v5::RafsV5BlobTable;
 use nydus_rafs::metadata::{MergeError, RafsSuper, RafsSuperConfig, RafsVersion};
 use nydus_storage::backend::localfs::LocalFs;
 use nydus_storage::backend::BlobBackend;
@@ -1717,16 +1717,17 @@ impl Command {
 
         let mut bootstrap_mgr = BootstrapManager::new(Some(bootstrap_path), None);
         let blobs = sb.superblock.get_blob_infos();
-        let mut rafsv6table = RafsV6BlobTable::new();
+        let mut rafstable = RafsV5BlobTable::new();
+
         for blob in &blobs {
-            rafsv6table.entries.push(blob.clone());
+            rafstable.entries.push(blob.clone());
         }
 
         OptimizePrefetch::generate_prefetch(
             &mut tree,
             &mut build_ctx,
             &mut bootstrap_mgr,
-            &mut rafsv6table,
+            &mut rafstable,
             blobs_dir_path.to_path_buf(),
             prefetch_nodes,
             output_path,

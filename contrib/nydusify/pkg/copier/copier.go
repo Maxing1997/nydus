@@ -334,6 +334,7 @@ func Copy(ctx context.Context, opt Opt) error {
 		logrus.Infof("imported source image %s", source)
 	} else {
 		sourceNamed, err := docker.ParseDockerRef(opt.Source)
+		fmt.Println("sourceNamed: ", sourceNamed)
 		if err != nil {
 			return errors.Wrap(err, "parse source reference")
 		}
@@ -352,8 +353,8 @@ func Copy(ctx context.Context, opt Opt) error {
 		}
 		logrus.Infof("pulled source image %s", source)
 	}
-
 	sourceImage, err := pvd.Image(ctx, source)
+	fmt.Println("sourceImage: ", sourceImage, source)
 	if err != nil {
 		return errors.Wrap(err, "find image from store")
 	}

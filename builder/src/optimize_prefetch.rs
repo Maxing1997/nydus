@@ -18,7 +18,7 @@ use crate::TreeNode;
 use anyhow::Context;
 use anyhow::{Ok, Result};
 use nydus_api::ConfigV2;
-use nydus_rafs::metadata::layout::v6::RafsV6BlobTable;
+use nydus_rafs::metadata::layout::v5::RafsV5BlobTable;
 use nydus_rafs::metadata::layout::RafsBlobTable;
 use nydus_rafs::metadata::RafsSuper;
 use nydus_rafs::metadata::RafsVersion;
@@ -72,12 +72,13 @@ impl OptimizePrefetch {
         tree: &mut Tree,
         ctx: &mut BuildContext,
         bootstrap_mgr: &mut BootstrapManager,
-        blob_table: &mut RafsV6BlobTable,
+        blob_table: &mut RafsV5BlobTable,
         blobs_dir_path: PathBuf,
         prefetch_nodes: Vec<TreeNode>,
         output_path: Option<&Path>,
     ) -> Result<()> {
         // create a new blob for prefetch layer
+
         let blob_layer_num = blob_table.entries.len();
 
         let mut blob_state = PrefetchBlobState::new(&ctx, blob_layer_num as u32, &blobs_dir_path)?;
@@ -114,7 +115,7 @@ impl OptimizePrefetch {
         tree: &mut Tree,
         ctx: &mut BuildContext,
         bootstrap_mgr: &mut BootstrapManager,
-        blob_table: &mut RafsV6BlobTable,
+        blob_table: &mut RafsV5BlobTable,
     ) -> Result<()> {
         let mut bootstrap_ctx = bootstrap_mgr.create_ctx()?;
         let mut bootstrap = Bootstrap::new(tree.clone())?;
@@ -145,7 +146,7 @@ impl OptimizePrefetch {
             });
 
         // Dump bootstrap
-        let blob_table_withprefetch = RafsBlobTable::V6(blob_table.clone());
+        let blob_table_withprefetch = RafsBlobTable::V5(blob_table.clone());
         bootstrap.dump(
             ctx,
             &mut bootstrap_mgr.bootstrap_storage,
@@ -158,7 +159,7 @@ impl OptimizePrefetch {
 
     fn dump_blob(
         ctx: &mut BuildContext,
-        blob_table: &mut RafsV6BlobTable,
+        blob_table: &mut RafsV5BlobTable,
         blob_state: &mut PrefetchBlobState,
     ) -> Result<()> {
         blob_state
@@ -193,7 +194,7 @@ impl OptimizePrefetch {
         node: &TreeNode,
         prefetch_state: &mut PrefetchBlobState,
         batch: &mut BatchContextGenerator,
-        blob_table: &RafsV6BlobTable,
+        blob_table: &RafsV5BlobTable,
         blobs_dir_path: &Path,
     ) -> Result<()> {
         let tree_node = tree
@@ -290,6 +291,7 @@ pub fn update_ctx_from_bootstrap(
 
     ctx.fs_version =
         RafsVersion::try_from(sb.meta.version).context("Failed to get RAFS version")?;
+    info!("RAFS version: {}", ctx.fs_version.to_string());
     ctx.compressor = config.compressor;
     Ok(sb)
 }

@@ -15,7 +15,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/goharbor/acceleration-service/pkg/platformutil"
+
 	"github.com/containerd/containerd/content/local"
+	"github.com/containerd/containerd/reference/docker"
 
 	"github.com/containerd/containerd/errdefs"
 
@@ -23,9 +26,11 @@ import (
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/nydus-snapshotter/pkg/converter"
 	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/committer"
+	converterpvd "github.com/dragonflyoss/nydus/contrib/nydusify/pkg/converter/provider"
 	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/parser"
 	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/provider"
 	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/utils"
+	accerr "github.com/goharbor/acceleration-service/pkg/errdefs"
 	"github.com/goharbor/acceleration-service/pkg/remote"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -199,6 +204,52 @@ func packToTar(files []File, compress bool) io.ReadCloser {
 	return pr
 }
 
+func fetchBlob(ctx context.Context, opt Opt, tmpDir, blobDir string) error {
+	platformMC, err := platformutil.ParsePlatforms(opt.AllPlatforms, opt.Platforms)
+	if err != nil {
+		fmt.Println("parse platform: %v", err)
+		return err
+	}
+	pvd, err := converterpvd.New(tmpDir, hosts(opt), 200, "v1", platformMC, opt.PushChunkSize)
+	sourceNamed, err := docker.ParseDockerRef(opt.Source)
+	if err != nil {
+		fmt.Println("parse source reference: %v", err)
+		return errors.Wrap(err, "parse source reference")
+	}
+	source := sourceNamed.String()
+	if err := pvd.Pull(ctx, source); err != nil {
+		if accerr.NeedsRetryWithHTTP(err) {
+			pvd.UsePlainHTTP()
+			if err := pvd.Pull(ctx, source); err != nil {
+				return errors.Wrap(err, "try to pull image")
+			}
+		} else {
+			return errors.Wrap(err, "pull source image")
+		}
+	}
+	logrus.Infof("pulled source image %s", source)
+	fmt.Println("source: ", source)
+	sourceImage, err := pvd.Image(ctx, source)
+	fmt.Println("source image: ", sourceImage)
+	if err != nil {
+		fmt.Println("find image from store: ", err)
+		return errors.Wrap(err, "find image from store")
+	}
+	logrus.Infof("exporting source image to %s", blobDir)
+	outputPath := filepath.Join(blobDir, "blob.tar")
+	f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := pvd.Export(ctx, f, sourceImage, source); err != nil {
+		return errors.Wrap(err, "export source image to target tar file")
+
+	}
+	UnTar(blobDir, outputPath)
+	return nil
+}
+
 // Optimize covert and push a new optimized nydus image
 func Optimize(ctx context.Context, opt Opt) error {
 	ctx = namespaces.WithNamespace(ctx, "nydusify")
@@ -239,7 +290,11 @@ func Optimize(ctx context.Context, opt Opt) error {
 		return errors.Wrap(err, "create temp directory")
 	}
 	//defer os.RemoveAll(tmpDir)
-
+	blobDir := filepath.Join(tmpDir, "blob-dir")
+	if err := os.MkdirAll(blobDir, 0755); err != nil {
+		return err
+	}
+	fetchBlob(ctx, opt, tmpDir, blobDir)
 	target := filepath.Join(tmpDir, "nydus_bootstrap")
 	logrus.Infof("Pulling Nydus bootstrap to %s", target)
 	bootstrapReader, err := sourceParser.PullNydusBootstrap(ctx, sourceParsed.NydusImage)
@@ -252,12 +307,13 @@ func Optimize(ctx context.Context, opt Opt) error {
 		return errors.Wrap(err, "unpack Nydus bootstrap layer")
 	}
 
+	blobDir = filepath.Join(blobDir + "/blobs/sha256")
 	newBootstrapPath := filepath.Join(tmpDir, "optimized_bootstrap")
 	builderOpt := BuildOption{
 		BuilderPath:       opt.NydusImagePath,
 		PrefetchFilesPath: opt.PrefetchFilesPath,
 		BootstrapPath:     target,
-		BlobDir:           opt.WorkDir,
+		BlobDir:           blobDir,
 		NewBootstrapPath:  newBootstrapPath,
 		OutputPath:        filepath.Join(tmpDir, "output-blob-id"),
 	}
@@ -268,14 +324,82 @@ func Optimize(ctx context.Context, opt Opt) error {
 	}
 
 	pushManifest(ctx, *sourceParsed.NydusImage, blobid,
-		newBootstrapPath, opt.PrefetchFilesPath, opt.Target, "6", opt.WorkDir, tmpDir, opt.TargetInsecure)
+		newBootstrapPath, opt.PrefetchFilesPath, opt.Target, "6", blobDir, tmpDir, opt.TargetInsecure)
 
 	return nil
 }
 
+func UnTar(dst, src string) (err error) {
+	// 打开准备解压的 tar 包
+	fr, err := os.Open(src)
+	if err != nil {
+		return
+	}
+	defer fr.Close()
+
+	// 通过 gr 创建 tar.Reader
+	tr := tar.NewReader(fr)
+
+	// 现在已经获得了 tar.Reader 结构了，只需要循环里面的数据写入文件就可以了
+	for {
+		hdr, err := tr.Next()
+
+		switch {
+		case err == io.EOF:
+			return nil
+		case err != nil:
+			return err
+		case hdr == nil:
+			continue
+		}
+
+		// 处理下保存路径，将要保存的目录加上 header 中的 Name
+		// 这个变量保存的有可能是目录，有可能是文件，所以就叫 FileDir 了……
+		dstFileDir := filepath.Join(dst, hdr.Name)
+
+		// 根据 header 的 Typeflag 字段，判断文件的类型
+		switch hdr.Typeflag {
+		case tar.TypeDir: // 如果是目录时候，创建目录
+			// 判断下目录是否存在，不存在就创建
+			if b := ExistDir(dstFileDir); !b {
+				// 使用 MkdirAll 不使用 Mkdir ，就类似 Linux 终端下的 mkdir -p，
+				// 可以递归创建每一级目录
+				if err := os.MkdirAll(dstFileDir, 0775); err != nil {
+					return err
+				}
+			}
+		case tar.TypeReg: // 如果是文件就写入到磁盘
+			// 创建一个可以读写的文件，权限就使用 header 中记录的权限
+			// 因为操作系统的 FileMode 是 int32 类型的，hdr 中的是 int64，所以转换下
+			file, err := os.OpenFile(dstFileDir, os.O_CREATE|os.O_RDWR, os.FileMode(hdr.Mode))
+			if err != nil {
+				return err
+			}
+			n, err := io.Copy(file, tr)
+			if err != nil {
+				return err
+			}
+			// 将解压结果输出显示
+			fmt.Printf("成功解压： %s , 共处理了 %d 个字符\n", dstFileDir, n)
+
+			// 不要忘记关闭打开的文件，因为它是在 for 循环中，不能使用 defer
+			// 如果想使用 defer 就放在一个单独的函数中
+			file.Close()
+		}
+	}
+
+	return nil
+}
+
+// 判断目录是否存在
+func ExistDir(dirname string) bool {
+	fi, err := os.Stat(dirname)
+	return (err == nil || os.IsExist(err)) && fi.IsDir()
+}
+
 // push blob
 func pushBlob(ctx context.Context, blobDir, blobName string, blobDigest digest.Digest, targetRef string, insecure bool) (*ocispec.Descriptor, error) {
-	fmt.Println(filepath.Join(blobDir, blobName))
+	fmt.Println("blob dir:", filepath.Join(blobDir, blobName))
 	blobRa, err := local.OpenReader(filepath.Join(blobDir, blobName))
 	if err != nil {
 		return nil, errors.Wrap(err, "open reader for upper blob")
@@ -418,6 +542,13 @@ func pushManifest(ctx context.Context, nydusImage parser.Image, blobid string,
 		return errors.Wrap(err, "get tar digest")
 	}
 	//push bootstrap
+	var blobListInAnnotation []string
+	for idx := range originalBlobLayers {
+		blobListInAnnotation = append(blobListInAnnotation, originalBlobLayers[idx].Digest.Hex())
+	}
+	// fmt.Println(hotBlob)
+	blobListInAnnotation = append(blobListInAnnotation, digest.Digest(("sha256:" + digest.Digest(blobid))).Hex())
+	blobListBytes, err := json.Marshal(blobListInAnnotation)
 	bootstrapDesc := ocispec.Descriptor{
 		Digest:    digester2.Digest(),
 		Size:      bootstrapTarGzRa.Size(),
@@ -426,6 +557,7 @@ func pushManifest(ctx context.Context, nydusImage parser.Image, blobid string,
 			converter.LayerAnnotationFSVersion:      fsversion,
 			converter.LayerAnnotationNydusBootstrap: "true",
 			utils.LayerAnnotationNyudsPrefetchFiles: blobid,
+			utils.LayerAnnotationNydusBlobIDs:       string(blobListBytes),
 		},
 	}
 
