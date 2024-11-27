@@ -121,29 +121,28 @@ impl OptimizePrefetch {
         // Build bootstrap
         bootstrap.build(ctx, &mut bootstrap_ctx)?;
 
+        // Verify and update prefetch blob
+        assert!(
+            blob_table
+                .get_entries()
+                .iter()
+                .filter(|blob| blob.blob_id() == "prefetch-blob")
+                .count()
+                == 1,
+            "Expected exactly one prefetch-blob"
+        );
+        // Rewrite prefetch blob id
+        blob_table
+            .get_entries()
+            .iter_mut()
+            .filter(|blob| blob.blob_id() == "prefetch-blob")
+            .for_each(|blob| {
+                let mut info = (**blob).clone();
+                info.set_blob_id(ctx.blob_id.clone());
+                *blob = Arc::new(info);
+            });
         match blob_table {
             RafsBlobTable::V5(table) => {
-                // Verify and update prefetch blob
-                assert!(
-                    table
-                        .entries
-                        .iter()
-                        .filter(|blob| blob.blob_id() == "prefetch-blob")
-                        .count()
-                        == 1,
-                    "Expected exactly one prefetch-blob"
-                );
-                table
-                    .entries
-                    .iter_mut()
-                    .filter(|blob| blob.blob_id() == "prefetch-blob")
-                    .for_each(|blob| {
-                        let mut info = (**blob).clone();
-                        info.set_blob_id(ctx.blob_id.clone());
-                        *blob = Arc::new(info);
-                    });
-                // Rewrite prefetch blob id
-
                 // Dump bootstrap
                 let blob_table_withprefetch = RafsBlobTable::V5(table.clone());
                 bootstrap.dump(
@@ -155,27 +154,6 @@ impl OptimizePrefetch {
                 Ok(())
             }
             RafsBlobTable::V6(table) => {
-                // Verify and update prefetch blob
-                assert!(
-                    table
-                        .entries
-                        .iter()
-                        .filter(|blob| blob.blob_id() == "prefetch-blob")
-                        .count()
-                        == 1,
-                    "Expected exactly one prefetch-blob"
-                );
-                table
-                    .entries
-                    .iter_mut()
-                    .filter(|blob| blob.blob_id() == "prefetch-blob")
-                    .for_each(|blob| {
-                        let mut info = (**blob).clone();
-                        info.set_blob_id(ctx.blob_id.clone());
-                        *blob = Arc::new(info);
-                    });
-                // Rewrite prefetch blob id
-
                 // Dump bootstrap
                 let blob_table_withprefetch = RafsBlobTable::V6(table.clone());
                 bootstrap.dump(
