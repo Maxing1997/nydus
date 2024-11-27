@@ -77,11 +77,8 @@ impl OptimizePrefetch {
         output_path: Option<&Path>,
     ) -> Result<()> {
         // create a new blob for prefetch layer
-        let blob_layer_num = match blob_table {
-            RafsBlobTable::V5(table) => table.entries.len(),
-            RafsBlobTable::V6(table) => table.entries.len(),
-        };
 
+        let blob_layer_num = blob_table.get_entries().len();
         let mut blob_state = PrefetchBlobState::new(&ctx, blob_layer_num as u32, &blobs_dir_path)?;
         let mut batch = BatchContextGenerator::new(0)?;
         for node in &prefetch_nodes {
@@ -201,14 +198,9 @@ impl OptimizePrefetch {
             .blob_info
             .set_chunk_count(blob_state.blob_ctx.clone().chunk_count as usize);
 
-        match blob_table {
-            RafsBlobTable::V5(table) => {
-                table.entries.push(blob_state.blob_info.clone().into());
-            }
-            RafsBlobTable::V6(table) => {
-                table.entries.push(blob_state.blob_info.clone().into());
-            }
-        }
+        blob_table
+            .get_entries()
+            .push(blob_state.blob_info.clone().into());
 
         info!(
             "the blob info chunkcount {}",
@@ -246,23 +238,19 @@ impl OptimizePrefetch {
             .ok_or(anyhow!("failed to get node"))?
             .node
             .as_ref();
-        let blob_id = match &blob_table {
-            RafsBlobTable::V5(table) => tree_node
-                .borrow()
-                .chunks
-                .first()
-                .and_then(|chunk| table.entries.get(chunk.inner.blob_index() as usize))
-                .map(|entry| entry.blob_id()),
-            RafsBlobTable::V6(table) => tree_node
-                .borrow()
-                .chunks
-                .first()
-                .and_then(|chunk| table.entries.get(chunk.inner.blob_index() as usize))
-                .map(|entry| entry.blob_id()),
-        };
-        let blob_id_str = blob_id.ok_or(anyhow!("failed to get blob id"))?;
-
-        let mut blob_file = Arc::new(File::open(blobs_dir_path.join(blob_id_str))?);
+        let blob_id = tree_node
+            .borrow()
+            .chunks
+            .first()
+            .and_then(|chunk| {
+                blob_table
+                    .get_entries()
+                    .get(chunk.inner.blob_index() as usize)
+                    .cloned()
+            })
+            .map(|entry| entry.blob_id())
+            .ok_or(anyhow!("failed to get blob id"))?;
+        let mut blob_file = Arc::new(File::open(blobs_dir_path.join(blob_id))?);
 
         tree_node.borrow_mut().layer_idx = prefetch_state.blob_info.blob_index() as u16;
 
