@@ -38,7 +38,6 @@ use nydus_builder::{
     TarballBuilder, Tree, TreeNode, WhiteoutSpec,
 };
 
-use nydus_rafs::metadata::layout::v5::RafsV5BlobTable;
 use nydus_rafs::metadata::{MergeError, RafsSuper, RafsSuperConfig, RafsVersion};
 use nydus_storage::backend::localfs::LocalFs;
 use nydus_storage::backend::BlobBackend;
@@ -54,6 +53,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::unpack::{OCIUnpacker, Unpacker};
 use crate::validator::Validator;
+use nydus_rafs::metadata::layout::v5::RafsV5BlobTable;
+use nydus_rafs::metadata::layout::v6::RafsV6BlobTable;
+use nydus_rafs::metadata::layout::RafsBlobTable;
 
 #[cfg(target_os = "linux")]
 use nydus_service::ServiceArgs;
@@ -1717,24 +1719,47 @@ impl Command {
 
         let mut bootstrap_mgr = BootstrapManager::new(Some(bootstrap_path), None);
         let blobs = sb.superblock.get_blob_infos();
-        let mut rafstable = RafsV5BlobTable::new();
 
-        for blob in &blobs {
-            rafstable.entries.push(blob.clone());
+        match build_ctx.fs_version {
+            RafsVersion::V5 => {
+                let mut table = RafsV5BlobTable::new();
+                for blob in &blobs {
+                    table.entries.push(blob.clone());
+                }
+                let mut blob_table = RafsBlobTable::V5(table);
+                OptimizePrefetch::generate_prefetch(
+                    &mut tree,
+                    &mut build_ctx,
+                    &mut bootstrap_mgr,
+                    &mut blob_table,
+                    blobs_dir_path.to_path_buf(),
+                    prefetch_nodes,
+                    output_path,
+                )
+                .with_context(|| "Failed to generate prefetch bootstrap")?;
+
+                Ok(())
+            }
+            RafsVersion::V6 => {
+                let mut table = RafsV6BlobTable::new();
+                for blob in &blobs {
+                    table.entries.push(blob.clone());
+                }
+                let mut blob_table = RafsBlobTable::V6(table);
+                OptimizePrefetch::generate_prefetch(
+                    &mut tree,
+                    &mut build_ctx,
+                    &mut bootstrap_mgr,
+                    &mut blob_table,
+                    blobs_dir_path.to_path_buf(),
+                    prefetch_nodes,
+                    output_path,
+                )
+                .with_context(|| "Failed to generate prefetch bootstrap")?;
+
+                Ok(())
+            }
         }
-
-        OptimizePrefetch::generate_prefetch(
-            &mut tree,
-            &mut build_ctx,
-            &mut bootstrap_mgr,
-            &mut rafstable,
-            blobs_dir_path.to_path_buf(),
-            prefetch_nodes,
-            output_path,
-        )
-        .with_context(|| "Failed to generate prefetch bootstrap")?;
-
-        Ok(())
     }
 
     fn inspect(matches: &ArgMatches) -> Result<()> {

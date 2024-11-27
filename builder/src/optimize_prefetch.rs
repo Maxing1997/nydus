@@ -18,7 +18,6 @@ use crate::TreeNode;
 use anyhow::Context;
 use anyhow::{Ok, Result};
 use nydus_api::ConfigV2;
-use nydus_rafs::metadata::layout::v5::RafsV5BlobTable;
 use nydus_rafs::metadata::layout::RafsBlobTable;
 use nydus_rafs::metadata::RafsSuper;
 use nydus_rafs::metadata::RafsVersion;
@@ -72,14 +71,16 @@ impl OptimizePrefetch {
         tree: &mut Tree,
         ctx: &mut BuildContext,
         bootstrap_mgr: &mut BootstrapManager,
-        blob_table: &mut RafsV5BlobTable,
+        blob_table: &mut RafsBlobTable,
         blobs_dir_path: PathBuf,
         prefetch_nodes: Vec<TreeNode>,
         output_path: Option<&Path>,
     ) -> Result<()> {
         // create a new blob for prefetch layer
-
-        let blob_layer_num = blob_table.entries.len();
+        let blob_layer_num = match blob_table {
+            RafsBlobTable::V5(table) => table.entries.len(),
+            RafsBlobTable::V6(table) => table.entries.len(),
+        };
 
         let mut blob_state = PrefetchBlobState::new(&ctx, blob_layer_num as u32, &blobs_dir_path)?;
         let mut batch = BatchContextGenerator::new(0)?;
@@ -115,7 +116,7 @@ impl OptimizePrefetch {
         tree: &mut Tree,
         ctx: &mut BuildContext,
         bootstrap_mgr: &mut BootstrapManager,
-        blob_table: &mut RafsV5BlobTable,
+        blob_table: &mut RafsBlobTable,
     ) -> Result<()> {
         let mut bootstrap_ctx = bootstrap_mgr.create_ctx()?;
         let mut bootstrap = Bootstrap::new(tree.clone())?;
@@ -123,49 +124,92 @@ impl OptimizePrefetch {
         // Build bootstrap
         bootstrap.build(ctx, &mut bootstrap_ctx)?;
 
-        // Verify and update prefetch blob
-        assert!(
-            blob_table
-                .entries
-                .iter()
-                .filter(|blob| blob.blob_id() == "prefetch-blob")
-                .count()
-                == 1,
-            "Expected exactly one prefetch-blob"
-        );
+        match blob_table {
+            RafsBlobTable::V5(table) => {
+                // Verify and update prefetch blob
+                assert!(
+                    table
+                        .entries
+                        .iter()
+                        .filter(|blob| blob.blob_id() == "prefetch-blob")
+                        .count()
+                        == 1,
+                    "Expected exactly one prefetch-blob"
+                );
+                table
+                    .entries
+                    .iter_mut()
+                    .filter(|blob| blob.blob_id() == "prefetch-blob")
+                    .for_each(|blob| {
+                        let mut info = (**blob).clone();
+                        info.set_blob_id(ctx.blob_id.clone());
+                        *blob = Arc::new(info);
+                    });
+                // Rewrite prefetch blob id
 
-        // Rewrite prefetch blob id
-        blob_table
-            .entries
-            .iter_mut()
-            .filter(|blob| blob.blob_id() == "prefetch-blob")
-            .for_each(|blob| {
-                let mut info = (**blob).clone();
-                info.set_blob_id(ctx.blob_id.clone());
-                *blob = Arc::new(info);
-            });
+                // Dump bootstrap
+                let blob_table_withprefetch = RafsBlobTable::V5(table.clone());
+                bootstrap.dump(
+                    ctx,
+                    &mut bootstrap_mgr.bootstrap_storage,
+                    &mut bootstrap_ctx,
+                    &blob_table_withprefetch,
+                )?;
+                Ok(())
+            }
+            RafsBlobTable::V6(table) => {
+                // Verify and update prefetch blob
+                assert!(
+                    table
+                        .entries
+                        .iter()
+                        .filter(|blob| blob.blob_id() == "prefetch-blob")
+                        .count()
+                        == 1,
+                    "Expected exactly one prefetch-blob"
+                );
+                table
+                    .entries
+                    .iter_mut()
+                    .filter(|blob| blob.blob_id() == "prefetch-blob")
+                    .for_each(|blob| {
+                        let mut info = (**blob).clone();
+                        info.set_blob_id(ctx.blob_id.clone());
+                        *blob = Arc::new(info);
+                    });
+                // Rewrite prefetch blob id
 
-        // Dump bootstrap
-        let blob_table_withprefetch = RafsBlobTable::V5(blob_table.clone());
-        bootstrap.dump(
-            ctx,
-            &mut bootstrap_mgr.bootstrap_storage,
-            &mut bootstrap_ctx,
-            &blob_table_withprefetch,
-        )?;
-
-        Ok(())
+                // Dump bootstrap
+                let blob_table_withprefetch = RafsBlobTable::V6(table.clone());
+                bootstrap.dump(
+                    ctx,
+                    &mut bootstrap_mgr.bootstrap_storage,
+                    &mut bootstrap_ctx,
+                    &blob_table_withprefetch,
+                )?;
+                Ok(())
+            }
+        }
     }
 
     fn dump_blob(
         ctx: &mut BuildContext,
-        blob_table: &mut RafsV5BlobTable,
+        blob_table: &mut RafsBlobTable,
         blob_state: &mut PrefetchBlobState,
     ) -> Result<()> {
         blob_state
             .blob_info
             .set_chunk_count(blob_state.blob_ctx.clone().chunk_count as usize);
-        blob_table.entries.push(blob_state.blob_info.clone().into());
+
+        match blob_table {
+            RafsBlobTable::V5(table) => {
+                table.entries.push(blob_state.blob_info.clone().into());
+            }
+            RafsBlobTable::V6(table) => {
+                table.entries.push(blob_state.blob_info.clone().into());
+            }
+        }
+
         info!(
             "the blob info chunkcount {}",
             blob_state.blob_info.clone().chunk_count()
@@ -194,7 +238,7 @@ impl OptimizePrefetch {
         node: &TreeNode,
         prefetch_state: &mut PrefetchBlobState,
         batch: &mut BatchContextGenerator,
-        blob_table: &RafsV5BlobTable,
+        blob_table: &RafsBlobTable,
         blobs_dir_path: &Path,
     ) -> Result<()> {
         let tree_node = tree
@@ -202,15 +246,23 @@ impl OptimizePrefetch {
             .ok_or(anyhow!("failed to get node"))?
             .node
             .as_ref();
-        let blob_id = tree_node
-            .borrow()
-            .chunks
-            .first()
-            .and_then(|chunk| blob_table.entries.get(chunk.inner.blob_index() as usize))
-            .map(|entry| entry.blob_id())
-            .ok_or(anyhow!("failed to get blob id"))?;
+        let blob_id = match &blob_table {
+            RafsBlobTable::V5(table) => tree_node
+                .borrow()
+                .chunks
+                .first()
+                .and_then(|chunk| table.entries.get(chunk.inner.blob_index() as usize))
+                .map(|entry| entry.blob_id()),
+            RafsBlobTable::V6(table) => tree_node
+                .borrow()
+                .chunks
+                .first()
+                .and_then(|chunk| table.entries.get(chunk.inner.blob_index() as usize))
+                .map(|entry| entry.blob_id()),
+        };
+        let blob_id_str = blob_id.ok_or(anyhow!("failed to get blob id"))?;
 
-        let mut blob_file = Arc::new(File::open(blobs_dir_path.join(blob_id))?);
+        let mut blob_file = Arc::new(File::open(blobs_dir_path.join(blob_id_str))?);
 
         tree_node.borrow_mut().layer_idx = prefetch_state.blob_info.blob_index() as u16;
 
