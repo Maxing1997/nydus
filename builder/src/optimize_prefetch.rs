@@ -159,18 +159,10 @@ impl OptimizePrefetch {
         blob_table: &mut RafsBlobTable,
         blob_state: &mut PrefetchBlobState,
     ) -> Result<()> {
-        blob_state
-            .blob_info
-            .set_chunk_count(blob_state.blob_ctx.clone().chunk_count as usize);
-
         blob_table
             .get_all()
             .push(blob_state.blob_info.clone().into());
 
-        info!(
-            "the blob info chunkcount {}",
-            blob_state.blob_info.clone().chunk_count()
-        );
         let mut blob_mgr = BlobManager::new(ctx.digester);
         blob_mgr.add_blob(blob_state.blob_ctx.clone());
         blob_mgr.set_current_blob_index(0);
@@ -244,11 +236,6 @@ impl OptimizePrefetch {
             }
             inner.set_index(blob_ctx.chunk_count);
             blob_ctx.chunk_count += 1;
-            info!("chunk_count {}", blob_ctx.chunk_count);
-            info!(
-                "chunk_count of prefetch_state blob_info {}",
-                blob_info.chunk_count()
-            );
             inner.set_compressed_offset(blob_ctx.current_compressed_offset);
             inner.set_uncompressed_offset(blob_ctx.current_uncompressed_offset);
             let aligned_d_size: u64 = nydus_utils::try_round_up_4k(inner.uncompressed_size())
@@ -296,7 +283,6 @@ pub fn update_ctx_from_bootstrap(
 
     ctx.fs_version =
         RafsVersion::try_from(sb.meta.version).context("Failed to get RAFS version")?;
-    info!("RAFS version: {}", ctx.fs_version.to_string());
     ctx.compressor = config.compressor;
     Ok(sb)
 }
