@@ -20,8 +20,6 @@ import (
 	"github.com/containerd/containerd/content/local"
 	"github.com/containerd/containerd/reference/docker"
 
-	"github.com/containerd/containerd/errdefs"
-
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/nydus-snapshotter/pkg/converter"
@@ -74,52 +72,6 @@ func hosts(opt Opt) remote.HostFunc {
 	return func(ref string) (remote.CredentialFunc, bool, error) {
 		return remote.NewDockerConfigCredFunc(), maps[ref], nil
 	}
-}
-
-// readerat implements io.ReaderAt in a completely stateless manner by opening
-// the referenced file for each call to ReadAt.
-type sizeReaderAt struct {
-	size int64
-	fp   *os.File
-}
-
-// OpenReader creates ReaderAt from a file
-func OpenReader(p string) (content.ReaderAt, error) {
-	fi, err := os.Stat(p)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, err
-		}
-
-		return nil, fmt.Errorf("blob not found: %w", errdefs.ErrNotFound)
-	}
-
-	fp, err := os.Open(p)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, err
-		}
-
-		return nil, fmt.Errorf("blob not found: %w", errdefs.ErrNotFound)
-	}
-
-	return sizeReaderAt{size: fi.Size(), fp: fp}, nil
-}
-
-func (ra sizeReaderAt) ReadAt(p []byte, offset int64) (int, error) {
-	return ra.fp.ReadAt(p, offset)
-}
-
-func (ra sizeReaderAt) Size() int64 {
-	return ra.size
-}
-
-func (ra sizeReaderAt) Close() error {
-	return ra.fp.Close()
-}
-
-func (ra sizeReaderAt) Reader() io.Reader {
-	return io.LimitReader(ra.fp, ra.size)
 }
 
 func makeDesc(x interface{}, oldDesc ocispec.Descriptor) ([]byte, *ocispec.Descriptor, error) {
@@ -454,8 +406,8 @@ func pushManifest(ctx context.Context, nydusImage parser.Image, blobid string,
 
 	targetRef, err := committer.ValidateRef(TargetRef)
 
-	bootstrapRa, err := OpenReader(targetBootstrapPath)
-	prefetchfilesRa, err := OpenReader(prefetchfilesPath)
+	bootstrapRa, err := local.OpenReader(targetBootstrapPath)
+	prefetchfilesRa, err := local.OpenReader(prefetchfilesPath)
 	files := append([]File{
 		{
 			Name:   EntryBootstrap,
@@ -514,8 +466,8 @@ func pushManifest(ctx context.Context, nydusImage parser.Image, blobid string,
 	}
 	defer bootstrapTarGz.Close()
 	fmt.Println(files)
-	bootstrapRa2, err := OpenReader(targetBootstrapPath)
-	prefetchfilesRa2, err := OpenReader(prefetchfilesPath)
+	bootstrapRa2, err := local.OpenReader(targetBootstrapPath)
+	prefetchfilesRa2, err := local.OpenReader(prefetchfilesPath)
 	files2 := append([]File{
 		{
 			Name:   EntryBootstrap,
@@ -531,7 +483,7 @@ func pushManifest(ctx context.Context, nydusImage parser.Image, blobid string,
 		return errors.Wrap(err, "compress bootstrap & prefetchfiles to tar.gz")
 	}
 
-	bootstrapTarGzRa, err := OpenReader(bootstrapTarGzPath)
+	bootstrapTarGzRa, err := local.OpenReader(bootstrapTarGzPath)
 	defer bootstrapTarGzRa.Close()
 	digester2 := digest.SHA256.Digester()
 	rf, err := os.Open(bootstrapTarGzPath)
