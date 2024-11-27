@@ -78,7 +78,7 @@ impl OptimizePrefetch {
     ) -> Result<()> {
         // create a new blob for prefetch layer
 
-        let blob_layer_num = blob_table.get_entries().len();
+        let blob_layer_num = blob_table.get_all().len();
         let mut blob_state = PrefetchBlobState::new(&ctx, blob_layer_num as u32, &blobs_dir_path)?;
         let mut batch = BatchContextGenerator::new(0)?;
         for node in &prefetch_nodes {
@@ -124,7 +124,7 @@ impl OptimizePrefetch {
         // Verify and update prefetch blob
         assert!(
             blob_table
-                .get_entries()
+                .get_all()
                 .iter()
                 .filter(|blob| blob.blob_id() == "prefetch-blob")
                 .count()
@@ -133,7 +133,7 @@ impl OptimizePrefetch {
         );
         // Rewrite prefetch blob id
         blob_table
-            .get_entries()
+            .get_all()
             .iter_mut()
             .filter(|blob| blob.blob_id() == "prefetch-blob")
             .for_each(|blob| {
@@ -141,30 +141,17 @@ impl OptimizePrefetch {
                 info.set_blob_id(ctx.blob_id.clone());
                 *blob = Arc::new(info);
             });
-        match blob_table {
-            RafsBlobTable::V5(table) => {
-                // Dump bootstrap
-                let blob_table_withprefetch = RafsBlobTable::V5(table.clone());
-                bootstrap.dump(
-                    ctx,
-                    &mut bootstrap_mgr.bootstrap_storage,
-                    &mut bootstrap_ctx,
-                    &blob_table_withprefetch,
-                )?;
-                Ok(())
-            }
-            RafsBlobTable::V6(table) => {
-                // Dump bootstrap
-                let blob_table_withprefetch = RafsBlobTable::V6(table.clone());
-                bootstrap.dump(
-                    ctx,
-                    &mut bootstrap_mgr.bootstrap_storage,
-                    &mut bootstrap_ctx,
-                    &blob_table_withprefetch,
-                )?;
-                Ok(())
-            }
-        }
+        let blob_table_withprefetch = match blob_table {
+            RafsBlobTable::V5(table) => RafsBlobTable::V5(table.clone()),
+            RafsBlobTable::V6(table) => RafsBlobTable::V6(table.clone()),
+        };
+        bootstrap.dump(
+            ctx,
+            &mut bootstrap_mgr.bootstrap_storage,
+            &mut bootstrap_ctx,
+            &blob_table_withprefetch,
+        )?;
+        Ok(())
     }
 
     fn dump_blob(
@@ -177,7 +164,7 @@ impl OptimizePrefetch {
             .set_chunk_count(blob_state.blob_ctx.clone().chunk_count as usize);
 
         blob_table
-            .get_entries()
+            .get_all()
             .push(blob_state.blob_info.clone().into());
 
         info!(
@@ -222,7 +209,7 @@ impl OptimizePrefetch {
             .first()
             .and_then(|chunk| {
                 blob_table
-                    .get_entries()
+                    .get_all()
                     .get(chunk.inner.blob_index() as usize)
                     .cloned()
             })

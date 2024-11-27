@@ -46,10 +46,10 @@ pub enum RafsBlobTable {
 }
 
 impl RafsBlobTable {
-    pub fn get_entries(&self) -> Vec<Arc<BlobInfo>> {
+    pub fn get_all(&self) -> Vec<Arc<BlobInfo>> {
         match self {
-            RafsBlobTable::V5(table) => table.entries.clone(),
-            RafsBlobTable::V6(table) => table.entries.clone(),
+            RafsBlobTable::V5(table) => table.get_all(),
+            RafsBlobTable::V6(table) => table.get_all(),
         }
     }
 }
