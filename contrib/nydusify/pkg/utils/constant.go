@@ -15,7 +15,6 @@ const (
 	LayerAnnotationNydusBlobDigest    = "containerd.io/snapshot/nydus-blob-digest"
 	LayerAnnotationNydusBlobSize      = "containerd.io/snapshot/nydus-blob-size"
 	LayerAnnotationNydusBootstrap     = "containerd.io/snapshot/nydus-bootstrap"
-	LayerAnnotationNydusBlobIDs       = "containerd.io/snapshot/nydus-blob-ids"
 	LayerAnnotationNydusFsVersion     = "containerd.io/snapshot/nydus-fs-version"
 	LayerAnnotationNydusSourceChainID = "containerd.io/snapshot/nydus-source-chainid"
 

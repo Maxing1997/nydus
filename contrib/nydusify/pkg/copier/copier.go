@@ -352,6 +352,7 @@ func Copy(ctx context.Context, opt Opt) error {
 		}
 		logrus.Infof("pulled source image %s", source)
 	}
+
 	sourceImage, err := pvd.Image(ctx, source)
 	if err != nil {
 		return errors.Wrap(err, "find image from store")
