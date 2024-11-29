@@ -12,13 +12,11 @@ use std::fmt::{Debug, Formatter};
 use std::io::Result;
 use std::mem::size_of;
 use std::os::unix::ffi::OsStrExt;
-use std::sync::Arc;
 
 use fuse_backend_rs::abi::fuse_abi::ROOT_ID;
 use nydus_utils::ByteSize;
 
 use crate::metadata::layout::v5::RAFSV5_ALIGNMENT;
-use crate::metadata::BlobInfo;
 
 /// Version number for Rafs v4.
 pub const RAFS_SUPER_VERSION_V4: u32 = 0x400;
@@ -43,15 +41,6 @@ pub mod v6;
 pub enum RafsBlobTable {
     V5(v5::RafsV5BlobTable),
     V6(v6::RafsV6BlobTable),
-}
-
-impl RafsBlobTable {
-    pub fn get_all(&self) -> Vec<Arc<BlobInfo>> {
-        match self {
-            RafsBlobTable::V5(table) => table.get_all(),
-            RafsBlobTable::V6(table) => table.get_all(),
-        }
-    }
 }
 
 #[doc(hidden)]

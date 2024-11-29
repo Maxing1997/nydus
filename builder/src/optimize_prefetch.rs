@@ -78,7 +78,10 @@ impl OptimizePrefetch {
     ) -> Result<()> {
         // create a new blob for prefetch layer
 
-        let blob_layer_num = blob_table.get_all().len();
+        let blob_layer_num = match blob_table {
+            RafsBlobTable::V5(table) => table.get_all().len(),
+            RafsBlobTable::V6(table) => table.get_all().len(),
+        };
         let mut blob_state = PrefetchBlobState::new(&ctx, blob_layer_num as u32, &blobs_dir_path)?;
         let mut batch = BatchContextGenerator::new(0)?;
         for node in &prefetch_nodes {
@@ -121,10 +124,14 @@ impl OptimizePrefetch {
         // Build bootstrap
         bootstrap.build(ctx, &mut bootstrap_ctx)?;
 
+        let entries = match blob_table {
+            RafsBlobTable::V5(table) => table.get_all(),
+            RafsBlobTable::V6(table) => table.get_all(),
+        };
+
         // Verify and update prefetch blob
         assert!(
-            blob_table
-                .get_all()
+            entries
                 .iter()
                 .filter(|blob| blob.blob_id() == "prefetch-blob")
                 .count()
@@ -132,15 +139,14 @@ impl OptimizePrefetch {
             "Expected exactly one prefetch-blob"
         );
         // Rewrite prefetch blob id
-        blob_table
-            .get_all()
-            .iter_mut()
-            .filter(|blob| blob.blob_id() == "prefetch-blob")
-            .for_each(|blob| {
-                let mut info = (**blob).clone();
-                info.set_blob_id(ctx.blob_id.clone());
-                *blob = Arc::new(info);
-            });
+        match blob_table {
+            RafsBlobTable::V5(table) => {
+                rewrite_blob_id(&mut table.entries, "prefetch-blob", ctx.blob_id.clone())
+            }
+            RafsBlobTable::V6(table) => {
+                rewrite_blob_id(&mut table.entries, "prefetch-blob", ctx.blob_id.clone())
+            }
+        }
         let blob_table_withprefetch = match blob_table {
             RafsBlobTable::V5(table) => RafsBlobTable::V5(table.clone()),
             RafsBlobTable::V6(table) => RafsBlobTable::V6(table.clone()),
@@ -159,9 +165,14 @@ impl OptimizePrefetch {
         blob_table: &mut RafsBlobTable,
         blob_state: &mut PrefetchBlobState,
     ) -> Result<()> {
-        blob_table
-            .get_all()
-            .push(blob_state.blob_info.clone().into());
+        match blob_table {
+            RafsBlobTable::V5(table) => {
+                table.entries.push(blob_state.blob_info.clone().into());
+            }
+            RafsBlobTable::V6(table) => {
+                table.entries.push(blob_state.blob_info.clone().into());
+            }
+        }
 
         let mut blob_mgr = BlobManager::new(ctx.digester);
         blob_mgr.add_blob(blob_state.blob_ctx.clone());
@@ -195,16 +206,15 @@ impl OptimizePrefetch {
             .ok_or(anyhow!("failed to get node"))?
             .node
             .as_ref();
+        let entries = match blob_table {
+            RafsBlobTable::V5(table) => table.get_all(),
+            RafsBlobTable::V6(table) => table.get_all(),
+        };
         let blob_id = tree_node
             .borrow()
             .chunks
             .first()
-            .and_then(|chunk| {
-                blob_table
-                    .get_all()
-                    .get(chunk.inner.blob_index() as usize)
-                    .cloned()
-            })
+            .and_then(|chunk| entries.get(chunk.inner.blob_index() as usize).cloned())
             .map(|entry| entry.blob_id())
             .ok_or(anyhow!("failed to get blob id"))?;
         let mut blob_file = Arc::new(File::open(blobs_dir_path.join(blob_id))?);
@@ -260,6 +270,17 @@ impl OptimizePrefetch {
 
         Ok(())
     }
+}
+
+fn rewrite_blob_id(entries: &mut [Arc<BlobInfo>], blob_id: &str, new_blob_id: String) {
+    entries
+        .iter_mut()
+        .filter(|blob| blob.blob_id() == blob_id)
+        .for_each(|blob| {
+            let mut info = (**blob).clone();
+            info.set_blob_id(new_blob_id.clone());
+            *blob = Arc::new(info);
+        });
 }
 
 pub fn update_ctx_from_bootstrap(

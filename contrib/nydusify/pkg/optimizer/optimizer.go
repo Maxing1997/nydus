@@ -300,6 +300,7 @@ func Optimize(ctx context.Context, opt Opt) error {
 	buildInfo := BuildInfo{
 		SourceImage:      *sourceParsed.NydusImage,
 		TargetRemote:     *remoter,
+		BuildDir:         buildDir,
 		BlobDir:          blobDir,
 		PrefetchBlobID:   prefetchBlobID,
 		NewBootstrapPath: newBootstrapPath,
