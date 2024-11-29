@@ -191,6 +191,8 @@ func getOriginalBlobLayers(nydusImage parser.Image) []ocispec.Descriptor {
 }
 
 func fetchBlobs(ctx context.Context, opt Opt, buildDir string) error {
+	logrus.Infof("pulling source image")
+	start := time.Now()
 	platformMC, err := platformutil.ParsePlatforms(opt.AllPlatforms, opt.Platforms)
 	if err != nil {
 		return err
@@ -206,7 +208,6 @@ func fetchBlobs(ctx context.Context, opt Opt, buildDir string) error {
 	}
 	source := sourceNamed.String()
 
-	logrus.Infof("pulling source image %s", source)
 	if err := pvd.Pull(ctx, source); err != nil {
 		if accerr.NeedsRetryWithHTTP(err) {
 			pvd.UsePlainHTTP()
@@ -217,6 +218,7 @@ func fetchBlobs(ctx context.Context, opt Opt, buildDir string) error {
 			return errors.Wrap(err, "pull source image")
 		}
 	}
+	logrus.Infof("pulled source image, elapsed: %s", time.Since(start))
 	return nil
 }
 
@@ -287,10 +289,13 @@ func Optimize(ctx context.Context, opt Opt) error {
 		NewBootstrapPath:  newBootstrapPath,
 		OutputPath:        outPutPath,
 	}
+	logrus.Infof("begin to build new prefetch blob and bootstrap")
+	start := time.Now()
 	prefetchBlobID, err := Build(builderOpt)
 	if err != nil {
 		return errors.Wrap(err, "optimize nydus image")
 	}
+	logrus.Infof("builded new prefetch blob and bootstrap, elapsed: %s", time.Since(start))
 
 	targetRef, err := committer.ValidateRef(opt.Target)
 	remoter, err := provider.DefaultRemote(targetRef, opt.TargetInsecure)
@@ -363,7 +368,7 @@ func pushCompoundBootstrap(ctx context.Context, opt Opt, buildInfo BuildInfo) (*
 	rc := packToTar(files, false)
 	defer rc.Close()
 
-	bootstrapTarPath := filepath.Join(opt.WorkDir, "bootstrap.tar")
+	bootstrapTarPath := filepath.Join(buildInfo.BuildDir, "bootstrap.tar")
 	bootstrapTar, err := os.Create(bootstrapTarPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "create bootstrap tar file")
