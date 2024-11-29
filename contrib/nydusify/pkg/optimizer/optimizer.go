@@ -14,6 +14,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"time"
 
 	"github.com/goharbor/acceleration-service/pkg/platformutil"
 
@@ -22,22 +24,25 @@ import (
 
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/namespaces"
-	"github.com/containerd/nydus-snapshotter/pkg/converter"
 	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/committer"
 	converterpvd "github.com/dragonflyoss/nydus/contrib/nydusify/pkg/converter/provider"
 	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/parser"
 	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/provider"
+	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/remote"
 	"github.com/dragonflyoss/nydus/contrib/nydusify/pkg/utils"
 	accerr "github.com/goharbor/acceleration-service/pkg/errdefs"
-	"github.com/goharbor/acceleration-service/pkg/remote"
+	accremote "github.com/goharbor/acceleration-service/pkg/remote"
+
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
-const EntryBootstrap = "image.boot"
-const EntryPrefetchFiles = "prefetch.files"
+const (
+	EntryBootstrap     = "image.boot"
+	EntryPrefetchFiles = "prefetch.files"
+)
 
 type Opt struct {
 	WorkDir        string
@@ -58,19 +63,35 @@ type Opt struct {
 	PushChunkSize int64
 }
 
+// the information generated during building
+type BuildInfo struct {
+	SourceImage  parser.Image
+	TargetRemote remote.Remote
+
+	BuildDir         string
+	BlobDir          string
+	PrefetchBlobID   string
+	NewBootstrapPath string
+}
+
 type File struct {
 	Name   string
 	Reader io.Reader
 	Size   int64
 }
 
-func hosts(opt Opt) remote.HostFunc {
+type bootstrapInfo struct {
+	bootstrapDesc   ocispec.Descriptor
+	bootstrapDiffID digest.Digest
+}
+
+func hosts(opt Opt) accremote.HostFunc {
 	maps := map[string]bool{
 		opt.Source: opt.SourceInsecure,
 		opt.Target: opt.TargetInsecure,
 	}
-	return func(ref string) (remote.CredentialFunc, bool, error) {
-		return remote.NewDockerConfigCredFunc(), maps[ref], nil
+	return func(ref string) (accremote.CredentialFunc, bool, error) {
+		return accremote.NewDockerConfigCredFunc(), maps[ref], nil
 	}
 }
 
@@ -89,6 +110,8 @@ func makeDesc(x interface{}, oldDesc ocispec.Descriptor) ([]byte, *ocispec.Descr
 }
 
 // packToTar packs files to .tar(.gz) stream then return reader.
+//
+//	ported from https://github.com/containerd/nydus-snapshotter/blob/5f948e4498151b51c742d2ee0b3f7b96f86a26f7/pkg/converter/utils.go#L92
 func packToTar(files []File, compress bool) io.ReadCloser {
 	dirHdr := &tar.Header{
 		Name:     "image",
@@ -156,19 +179,34 @@ func packToTar(files []File, compress bool) io.ReadCloser {
 	return pr
 }
 
-func fetchBlob(ctx context.Context, opt Opt, tmpDir, blobDir string) error {
+func getOriginalBlobLayers(nydusImage parser.Image) []ocispec.Descriptor {
+	originalBlobLayers := []ocispec.Descriptor{}
+	for idx := range nydusImage.Manifest.Layers {
+		layer := nydusImage.Manifest.Layers[idx]
+		if layer.MediaType == utils.MediaTypeNydusBlob {
+			originalBlobLayers = append(originalBlobLayers, layer)
+		}
+	}
+	return originalBlobLayers
+}
+
+func fetchBlobs(ctx context.Context, opt Opt, buildDir string) error {
 	platformMC, err := platformutil.ParsePlatforms(opt.AllPlatforms, opt.Platforms)
 	if err != nil {
-		fmt.Println("parse platform: %v", err)
 		return err
 	}
-	pvd, err := converterpvd.New(tmpDir, hosts(opt), 200, "v1", platformMC, opt.PushChunkSize)
+	pvd, err := converterpvd.New(buildDir, hosts(opt), 200, "v1", platformMC, opt.PushChunkSize)
+	if err != nil {
+		return err
+	}
+
 	sourceNamed, err := docker.ParseDockerRef(opt.Source)
 	if err != nil {
-		fmt.Println("parse source reference: %v", err)
 		return errors.Wrap(err, "parse source reference")
 	}
 	source := sourceNamed.String()
+
+	logrus.Infof("pulling source image %s", source)
 	if err := pvd.Pull(ctx, source); err != nil {
 		if accerr.NeedsRetryWithHTTP(err) {
 			pvd.UsePlainHTTP()
@@ -179,26 +217,6 @@ func fetchBlob(ctx context.Context, opt Opt, tmpDir, blobDir string) error {
 			return errors.Wrap(err, "pull source image")
 		}
 	}
-	logrus.Infof("pulled source image %s", source)
-	fmt.Println("source: ", source)
-	sourceImage, err := pvd.Image(ctx, source)
-	fmt.Println("source image: ", sourceImage)
-	if err != nil {
-		fmt.Println("find image from store: ", err)
-		return errors.Wrap(err, "find image from store")
-	}
-	logrus.Infof("exporting source image to %s", blobDir)
-	outputPath := filepath.Join(blobDir, "blob.tar")
-	f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := pvd.Export(ctx, f, sourceImage, source); err != nil {
-		return errors.Wrap(err, "export source image to target tar file")
-
-	}
-	UnTar(blobDir, outputPath)
 	return nil
 }
 
@@ -210,7 +228,7 @@ func Optimize(ctx context.Context, opt Opt) error {
 	if err != nil {
 		return errors.Wrap(err, "Init source image parser")
 	}
-	sourceParser, err := parser.New(sourceRemote, "amd64")
+	sourceParser, err := parser.New(sourceRemote, runtime.GOARCH)
 	if sourceParser == nil {
 		return errors.Wrap(err, "failed to create parser")
 	}
@@ -219,11 +237,7 @@ func Optimize(ctx context.Context, opt Opt) error {
 	if err != nil {
 		return errors.Wrap(err, "parse source image")
 	}
-
-	//platformMC, err := platformutil.ParsePlatforms(opt.AllPlatforms, opt.Platforms)
-	if err != nil {
-		return err
-	}
+	sourceNydusImage := sourceParsed.NydusImage
 
 	if _, err := os.Stat(opt.WorkDir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -237,143 +251,88 @@ func Optimize(ctx context.Context, opt Opt) error {
 			return errors.Wrap(err, "stat work directory")
 		}
 	}
-	tmpDir, err := os.MkdirTemp(opt.WorkDir, "nydusify-")
+	buildDir, err := os.MkdirTemp(opt.WorkDir, "nydusify-")
 	if err != nil {
 		return errors.Wrap(err, "create temp directory")
 	}
-	//defer os.RemoveAll(tmpDir)
-	blobDir := filepath.Join(tmpDir, "blob-dir")
-	if err := os.MkdirAll(blobDir, 0755); err != nil {
-		return err
+	// TODO: defer os.RemoveAll(buildDir)
+
+	if err := fetchBlobs(ctx, opt, buildDir); err != nil {
+		return errors.Wrap(err, "prepare nydus blobs")
 	}
-	fetchBlob(ctx, opt, tmpDir, blobDir)
-	target := filepath.Join(tmpDir, "nydus_bootstrap")
-	logrus.Infof("Pulling Nydus bootstrap to %s", target)
-	bootstrapReader, err := sourceParser.PullNydusBootstrap(ctx, sourceParsed.NydusImage)
+
+	originalBootstrap := filepath.Join(buildDir, "nydus_bootstrap")
+	bootstrapDesc := parser.FindNydusBootstrapDesc(&sourceNydusImage.Manifest)
+	if bootstrapDesc == nil {
+		return fmt.Errorf("not found Nydus bootstrap layer in manifest")
+	}
+	bootstrapReader, err := sourceParser.Remote.Pull(ctx, *bootstrapDesc, true)
 	if err != nil {
-		return errors.Wrap(err, "pull Nydus bootstrap layer")
+		return errors.Wrap(err, "pull Nydus originalBootstrap layer")
 	}
 	defer bootstrapReader.Close()
-
-	if err := utils.UnpackFile(bootstrapReader, utils.BootstrapFileNameInLayer, target); err != nil {
-		return errors.Wrap(err, "unpack Nydus bootstrap layer")
+	if err := utils.UnpackFile(bootstrapReader, utils.BootstrapFileNameInLayer, originalBootstrap); err != nil {
+		return errors.Wrap(err, "unpack Nydus originalBootstrap layer")
 	}
 
-	blobDir = filepath.Join(blobDir + "/blobs/sha256")
-	newBootstrapPath := filepath.Join(tmpDir, "optimized_bootstrap")
+	compressAlgo := bootstrapDesc.Digest.Algorithm().String()
+	blobDir := filepath.Join(buildDir + "/content/blobs/" + compressAlgo)
+	outPutPath := filepath.Join(buildDir, "output-blob-id")
+	newBootstrapPath := filepath.Join(buildDir, "optimized_bootstrap")
 	builderOpt := BuildOption{
 		BuilderPath:       opt.NydusImagePath,
 		PrefetchFilesPath: opt.PrefetchFilesPath,
-		BootstrapPath:     target,
+		BootstrapPath:     originalBootstrap,
 		BlobDir:           blobDir,
 		NewBootstrapPath:  newBootstrapPath,
-		OutputPath:        filepath.Join(tmpDir, "output-blob-id"),
+		OutputPath:        outPutPath,
 	}
-	fmt.Println(builderOpt)
-	blobid, err := Build(builderOpt)
+	prefetchBlobID, err := Build(builderOpt)
 	if err != nil {
 		return errors.Wrap(err, "optimize nydus image")
 	}
 
-	pushManifest(ctx, *sourceParsed.NydusImage, blobid,
-		newBootstrapPath, opt.PrefetchFilesPath, opt.Target, "6", blobDir, tmpDir, opt.TargetInsecure)
-
-	return nil
-}
-
-func UnTar(dst, src string) (err error) {
-	// 打开准备解压的 tar 包
-	fr, err := os.Open(src)
+	targetRef, err := committer.ValidateRef(opt.Target)
+	remoter, err := provider.DefaultRemote(targetRef, opt.TargetInsecure)
 	if err != nil {
-		return
+		return errors.Wrap(err, "create remote")
 	}
-	defer fr.Close()
-
-	// 通过 gr 创建 tar.Reader
-	tr := tar.NewReader(fr)
-
-	// 现在已经获得了 tar.Reader 结构了，只需要循环里面的数据写入文件就可以了
-	for {
-		hdr, err := tr.Next()
-
-		switch {
-		case err == io.EOF:
-			return nil
-		case err != nil:
-			return err
-		case hdr == nil:
-			continue
-		}
-
-		// 处理下保存路径，将要保存的目录加上 header 中的 Name
-		// 这个变量保存的有可能是目录，有可能是文件，所以就叫 FileDir 了……
-		dstFileDir := filepath.Join(dst, hdr.Name)
-
-		// 根据 header 的 Typeflag 字段，判断文件的类型
-		switch hdr.Typeflag {
-		case tar.TypeDir: // 如果是目录时候，创建目录
-			// 判断下目录是否存在，不存在就创建
-			if b := ExistDir(dstFileDir); !b {
-				// 使用 MkdirAll 不使用 Mkdir ，就类似 Linux 终端下的 mkdir -p，
-				// 可以递归创建每一级目录
-				if err := os.MkdirAll(dstFileDir, 0775); err != nil {
-					return err
-				}
-			}
-		case tar.TypeReg: // 如果是文件就写入到磁盘
-			// 创建一个可以读写的文件，权限就使用 header 中记录的权限
-			// 因为操作系统的 FileMode 是 int32 类型的，hdr 中的是 int64，所以转换下
-			file, err := os.OpenFile(dstFileDir, os.O_CREATE|os.O_RDWR, os.FileMode(hdr.Mode))
-			if err != nil {
-				return err
-			}
-			n, err := io.Copy(file, tr)
-			if err != nil {
-				return err
-			}
-			// 将解压结果输出显示
-			fmt.Printf("成功解压： %s , 共处理了 %d 个字符\n", dstFileDir, n)
-
-			// 不要忘记关闭打开的文件，因为它是在 for 循环中，不能使用 defer
-			// 如果想使用 defer 就放在一个单独的函数中
-			file.Close()
-		}
+	buildInfo := BuildInfo{
+		SourceImage:      *sourceParsed.NydusImage,
+		TargetRemote:     *remoter,
+		BlobDir:          blobDir,
+		PrefetchBlobID:   prefetchBlobID,
+		NewBootstrapPath: newBootstrapPath,
 	}
 
+	if err := pushNewImage(ctx, opt, buildInfo); err != nil {
+		return errors.Wrap(err, "push new image")
+	}
 	return nil
-}
-
-// 判断目录是否存在
-func ExistDir(dirname string) bool {
-	fi, err := os.Stat(dirname)
-	return (err == nil || os.IsExist(err)) && fi.IsDir()
 }
 
 // push blob
-func pushBlob(ctx context.Context, blobDir, blobName string, blobDigest digest.Digest, targetRef string, insecure bool) (*ocispec.Descriptor, error) {
-	fmt.Println("blob dir:", filepath.Join(blobDir, blobName))
-	blobRa, err := local.OpenReader(filepath.Join(blobDir, blobName))
+func pushBlob(ctx context.Context, buildInfo BuildInfo) (*ocispec.Descriptor, error) {
+	blobDir := buildInfo.BlobDir
+	blobID := buildInfo.PrefetchBlobID
+	remoter := buildInfo.TargetRemote
+
+	blobRa, err := local.OpenReader(filepath.Join(blobDir, blobID))
 	if err != nil {
 		return nil, errors.Wrap(err, "open reader for upper blob")
 	}
 
+	blobDigest := digest.NewDigestFromEncoded(digest.SHA256, blobID)
 	blobDesc := ocispec.Descriptor{
 		Digest:    blobDigest,
 		Size:      blobRa.Size(),
 		MediaType: utils.MediaTypeNydusBlob,
 		Annotations: map[string]string{
-			utils.LayerAnnotationUncompressed: blobDigest.String(),
-			utils.LayerAnnotationNydusBlob:    "true",
+			utils.LayerAnnotationNydusBlob: "true",
 		},
 	}
 
-	remoter, err := provider.DefaultRemote(targetRef, insecure)
-	if err != nil {
-		return nil, errors.Wrap(err, "create remote")
-	}
-
 	if err := remoter.Push(ctx, blobDesc, true, io.NewSectionReader(blobRa, 0, blobRa.Size())); err != nil {
-		fmt.Print("catch me")
 		if utils.RetryWithHTTP(err) {
 			remoter.MaybeWithHTTP(err)
 			if err := remoter.Push(ctx, blobDesc, true, io.NewSectionReader(blobRa, 0, blobRa.Size())); err != nil {
@@ -386,28 +345,9 @@ func pushBlob(ctx context.Context, blobDir, blobName string, blobDigest digest.D
 	return &blobDesc, nil
 }
 
-func pushManifest(ctx context.Context, nydusImage parser.Image, blobid string,
-	targetBootstrapPath, prefetchfilesPath, TargetRef, fsversion, blobDir, workDir string,
-	insecure bool) error {
-
-	//pushblob
-	hotBlob, err := pushBlob(ctx, blobDir, blobid, "sha256:"+digest.Digest(blobid), TargetRef, insecure)
-	if err != nil {
-		return errors.Wrap(err, "create hot blob desc")
-	}
-
-	originalBlobLayers := []ocispec.Descriptor{}
-	for idx := range nydusImage.Manifest.Layers {
-		layer := nydusImage.Manifest.Layers[idx]
-		if layer.MediaType == utils.MediaTypeNydusBlob {
-			originalBlobLayers = append(originalBlobLayers, layer)
-		}
-	}
-
-	targetRef, err := committer.ValidateRef(TargetRef)
-
-	bootstrapRa, err := local.OpenReader(targetBootstrapPath)
-	prefetchfilesRa, err := local.OpenReader(prefetchfilesPath)
+func pushCompoundBootstrap(ctx context.Context, opt Opt, buildInfo BuildInfo) (*bootstrapInfo, error) {
+	bootstrapRa, err := local.OpenReader(buildInfo.NewBootstrapPath)
+	prefetchfilesRa, err := local.OpenReader(opt.PrefetchFilesPath)
 	files := append([]File{
 		{
 			Name:   EntryBootstrap,
@@ -417,115 +357,140 @@ func pushManifest(ctx context.Context, nydusImage parser.Image, blobid string,
 			Name:   EntryPrefetchFiles,
 			Reader: content.NewReader(prefetchfilesRa),
 			Size:   prefetchfilesRa.Size(),
-		}})
+		},
+	})
 	rc := packToTar(files, false)
-	digester := digest.SHA256.Digester()
-	if _, err := io.Copy(digester.Hash(), rc); err != nil {
-		return errors.Wrap(err, "get tar digest")
-	}
-	bootstrapDiffID := digester.Digest()
+	defer rc.Close()
 
-	// Push image config
+	bootstrapTarPath := filepath.Join(opt.WorkDir, "bootstrap.tar")
+	bootstrapTar, err := os.Create(bootstrapTarPath)
+	if err != nil {
+		return nil, errors.Wrap(err, "create bootstrap tar file")
+	}
+	defer bootstrapTar.Close()
+
+	tarDigester := digest.SHA256.Digester()
+	if _, err := io.Copy(io.MultiWriter(bootstrapTar, tarDigester.Hash()), rc); err != nil {
+		return nil, errors.Wrap(err, "get tar digest")
+	}
+	bootstrapDiffID := tarDigester.Digest()
+
+	bootstrapTarRa, err := os.Open(bootstrapTarPath)
+	if err != nil {
+		return nil, errors.Wrap(err, "open bootstrap tar file")
+	}
+
+	bootstrapTarGzPath := filepath.Join(buildInfo.BuildDir, "bootstrap.tar.gz")
+	bootstrapTarGz, err := os.Create(bootstrapTarGzPath)
+	if err != nil {
+		return nil, errors.Wrap(err, "create bootstrap tar.gz file")
+	}
+	defer bootstrapTarGz.Close()
+	gzDigester := digest.SHA256.Digester()
+	gzWriter := gzip.NewWriter(io.MultiWriter(bootstrapTarGz, gzDigester.Hash()))
+	if _, err := io.Copy(gzWriter, bootstrapTarRa); err != nil {
+		return nil, errors.Wrap(err, "compress bootstrap & prefetchfiles to tar.gz")
+	}
+	if err := gzWriter.Close(); err != nil {
+		return nil, errors.Wrap(err, "close gzip writer")
+	}
+
+	bootstrapTarGzRa, err := local.OpenReader(bootstrapTarGzPath)
+	if err != nil {
+		return nil, errors.Wrap(err, "open reader for upper blob")
+	}
+	defer bootstrapTarGzRa.Close()
+
+	oldBootstrapDesc := parser.FindNydusBootstrapDesc(&buildInfo.SourceImage.Manifest)
+	if oldBootstrapDesc == nil {
+		return nil, fmt.Errorf("not found originial Nydus bootstrap layer in manifest")
+	}
+
+	annotations := oldBootstrapDesc.Annotations
+	annotations[utils.LayerAnnotationNyudsPrefetchBlob] = buildInfo.PrefetchBlobID
+
+	// push bootstrap
+	bootstrapDesc := ocispec.Descriptor{
+		Digest:      gzDigester.Digest(),
+		Size:        bootstrapTarGzRa.Size(),
+		MediaType:   ocispec.MediaTypeImageLayerGzip,
+		Annotations: annotations,
+	}
+
+	bootstrapRc, err := os.Open(bootstrapTarGzPath)
+	if err != nil {
+		return nil, errors.Wrapf(err, "open bootstrap %s", bootstrapTarGzPath)
+	}
+	defer bootstrapRc.Close()
+	if err := buildInfo.TargetRemote.Push(ctx, bootstrapDesc, true, bootstrapRc); err != nil {
+		return nil, errors.Wrap(err, "push bootstrap layer")
+	}
+	return &bootstrapInfo{
+		bootstrapDesc:   bootstrapDesc,
+		bootstrapDiffID: bootstrapDiffID,
+	}, nil
+}
+
+func pushConfig(ctx context.Context, buildInfo BuildInfo, prefetchBlobDiffID, bootstrapDiffID digest.Digest) (*ocispec.Descriptor, error) {
+	nydusImage := buildInfo.SourceImage
+	remoter := buildInfo.TargetRemote
 	config := nydusImage.Config
 
+	originalBlobLayers := getOriginalBlobLayers(nydusImage)
 	config.RootFS.DiffIDs = []digest.Digest{}
 	for idx := range originalBlobLayers {
 		config.RootFS.DiffIDs = append(config.RootFS.DiffIDs, originalBlobLayers[idx].Digest)
 	}
-	// fmt.Println(hotBlob)
-	config.RootFS.DiffIDs = append(config.RootFS.DiffIDs, "sha256:"+digest.Digest(blobid))
-	//Note: bootstrap diffid is tar
+	config.RootFS.DiffIDs = append(config.RootFS.DiffIDs, prefetchBlobDiffID)
+	// Note: bootstrap diffid is tar
 	config.RootFS.DiffIDs = append(config.RootFS.DiffIDs, bootstrapDiffID)
 
 	configBytes, configDesc, err := makeDesc(config, nydusImage.Manifest.Config)
 	if err != nil {
-		return errors.Wrap(err, "make config desc")
-	}
-
-	remoter, err := provider.DefaultRemote(targetRef, insecure)
-	if err != nil {
-		return errors.Wrap(err, "create remote")
+		return nil, errors.Wrap(err, "make config desc")
 	}
 
 	if err := remoter.Push(ctx, *configDesc, true, bytes.NewReader(configBytes)); err != nil {
 		if utils.RetryWithHTTP(err) {
 			remoter.MaybeWithHTTP(err)
 			if err := remoter.Push(ctx, *configDesc, true, bytes.NewReader(configBytes)); err != nil {
-				return errors.Wrap(err, "push image config")
+				return nil, errors.Wrap(err, "push image config")
 			}
 		} else {
-			fmt.Println("push config failed")
-			return errors.Wrap(err, "push image config")
+			return nil, errors.Wrap(err, "push image config")
 		}
 	}
 
-	bootstrapTarGzPath := filepath.Join(workDir, "bootstrap.tar.gz")
-	bootstrapTarGz, err := os.Create(bootstrapTarGzPath)
+	return configDesc, nil
+
+}
+
+func pushNewImage(ctx context.Context, opt Opt, buildInfo BuildInfo) error {
+	logrus.Infof("pushing new image")
+	start := time.Now()
+
+	remoter := buildInfo.TargetRemote
+	nydusImage := buildInfo.SourceImage
+
+	prefetchBlob, err := pushBlob(ctx, buildInfo)
 	if err != nil {
-		return errors.Wrap(err, "create bootstrap tar.gz file")
-	}
-	defer bootstrapTarGz.Close()
-	fmt.Println(files)
-	bootstrapRa2, err := local.OpenReader(targetBootstrapPath)
-	prefetchfilesRa2, err := local.OpenReader(prefetchfilesPath)
-	files2 := append([]File{
-		{
-			Name:   EntryBootstrap,
-			Reader: content.NewReader(bootstrapRa2),
-			Size:   bootstrapRa.Size(),
-		}, {
-			Name:   EntryPrefetchFiles,
-			Reader: content.NewReader(prefetchfilesRa2),
-			Size:   prefetchfilesRa.Size(),
-		}})
-	rd := packToTar(files2, true)
-	if _, err := io.Copy(bootstrapTarGz, rd); err != nil {
-		return errors.Wrap(err, "compress bootstrap & prefetchfiles to tar.gz")
+		return errors.Wrap(err, "create and push hot blob desc")
 	}
 
-	bootstrapTarGzRa, err := local.OpenReader(bootstrapTarGzPath)
-	defer bootstrapTarGzRa.Close()
-	digester2 := digest.SHA256.Digester()
-	rf, err := os.Open(bootstrapTarGzPath)
+	bootstrapInfo, err := pushCompoundBootstrap(ctx, opt, buildInfo)
 	if err != nil {
-		return errors.Wrapf(err, "open bootstrap %s", bootstrapTarGzPath)
-	}
-	if _, err := io.Copy(digester2.Hash(), rf); err != nil {
-		return errors.Wrap(err, "get tar digest")
-	}
-	//push bootstrap
-	var blobListInAnnotation []string
-	for idx := range originalBlobLayers {
-		blobListInAnnotation = append(blobListInAnnotation, originalBlobLayers[idx].Digest.Hex())
-	}
-	// fmt.Println(hotBlob)
-	blobListInAnnotation = append(blobListInAnnotation, digest.Digest(("sha256:" + digest.Digest(blobid))).Hex())
-	blobListBytes, err := json.Marshal(blobListInAnnotation)
-	bootstrapDesc := ocispec.Descriptor{
-		Digest:    digester2.Digest(),
-		Size:      bootstrapTarGzRa.Size(),
-		MediaType: ocispec.MediaTypeImageLayerGzip,
-		Annotations: map[string]string{
-			converter.LayerAnnotationFSVersion:      fsversion,
-			converter.LayerAnnotationNydusBootstrap: "true",
-			utils.LayerAnnotationNyudsPrefetchFiles: blobid,
-			utils.LayerAnnotationNydusBlobIDs:       string(blobListBytes),
-		},
+		return errors.Wrap(err, "create and push bootstrap desc")
 	}
 
-	bootstrapRc, err := os.Open(bootstrapTarGzPath)
+	configDesc, err := pushConfig(ctx, buildInfo, prefetchBlob.Digest, bootstrapInfo.bootstrapDiffID)
 	if err != nil {
-		return errors.Wrapf(err, "open bootstrap %s", bootstrapTarGzPath)
-	}
-	defer bootstrapRc.Close()
-	if err := remoter.Push(ctx, bootstrapDesc, true, bootstrapRc); err != nil {
-		return errors.Wrap(err, "push bootstrap layer")
+		return errors.Wrap(err, "create and push bootstrap desc")
 	}
 
-	//push image manifest
-	layers := originalBlobLayers
-	layers = append(layers, *hotBlob)
-	layers = append(layers, bootstrapDesc)
+	// push image manifest
+	layers := getOriginalBlobLayers(nydusImage)
+	layers = append(layers, *prefetchBlob)
+	layers = append(layers, bootstrapInfo.bootstrapDesc)
 	nydusImage.Manifest.Config = *configDesc
 	nydusImage.Manifest.Layers = layers
 
@@ -536,7 +501,6 @@ func pushManifest(ctx context.Context, nydusImage parser.Image, blobid string,
 	if err := remoter.Push(ctx, *manifestDesc, false, bytes.NewReader(manifestBytes)); err != nil {
 		return errors.Wrap(err, "push image manifest")
 	}
-	fmt.Println("success")
-
+	logrus.Infof("pushed new image, elapsed: %s", time.Since(start))
 	return nil
 }

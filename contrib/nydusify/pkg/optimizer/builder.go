@@ -2,7 +2,6 @@ package optimizer
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -30,7 +29,7 @@ type BuildOption struct {
 
 type outputJSON struct {
 	NewBootstrapPath string
-	HotBlob          string
+	PrefetchBlob     string
 }
 
 func Build(option BuildOption) (string, error) {
@@ -73,10 +72,9 @@ func Build(option BuildOption) (string, error) {
 
 	BlobId, err := os.ReadFile(option.OutputPath)
 	if err != nil {
-		fmt.Printf("failed to read file: %v\n", err)
-		return "", nil
+		return "", errors.Wrap(err, "failed to read blob id file\n")
 	}
 
-	fmt.Printf("File content: %s\n", BlobId)
+	logrus.Infof("build success for prefetch blob : %s", BlobId)
 	return string(BlobId), nil
 }
