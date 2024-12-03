@@ -24,4 +24,5 @@ const (
 
 	LayerAnnotationNydusCommitBlobs  = "containerd.io/snapshot/nydus-commit-blobs"
 	LayerAnnotationNyudsPrefetchBlob = "containerd.io/snapshot/nydus-prefetch-blob"
+	LayerAnnotationNydusBlobIDs      = "containerd.io/snapshot/nydus-blob-ids"
 )

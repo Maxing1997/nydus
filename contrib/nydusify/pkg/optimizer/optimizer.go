@@ -428,9 +428,19 @@ func pushCompoundBootstrap(ctx context.Context, opt Opt, buildInfo BuildInfo) (*
 	if oldBootstrapDesc == nil {
 		return nil, fmt.Errorf("not found originial Nydus bootstrap layer in manifest")
 	}
+	// push bootstrap
+	var blobListInAnnotation []string
+	originalBlobLayers := getOriginalBlobLayers(buildInfo.SourceImage)
+	for idx := range originalBlobLayers {
+		blobListInAnnotation = append(blobListInAnnotation, originalBlobLayers[idx].Digest.Hex())
+	}
+	blobListInAnnotation = append(blobListInAnnotation, buildInfo.PrefetchBlobID)
+	blobListBytes, err := json.Marshal(blobListInAnnotation)
 
 	annotations := oldBootstrapDesc.Annotations
 	annotations[utils.LayerAnnotationNyudsPrefetchBlob] = buildInfo.PrefetchBlobID
+	annotations[utils.LayerAnnotationNydusBlobIDs] = string(blobListBytes)
+	// annotations[converter.LayerAnnotationFSVersion] = fsversion
 
 	// push bootstrap
 	bootstrapDesc := ocispec.Descriptor{
