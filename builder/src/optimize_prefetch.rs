@@ -51,7 +51,7 @@ impl PrefetchBlobState {
             ctx.blob_features,
         );
         blob_info.set_compressor(ctx.compressor);
-        blob_info.set_hot_blob_feature(true);
+        blob_info.set_separated_with_prefetch_files_feature(true);
         let mut blob_ctx = BlobContext::from(ctx, &blob_info, ChunkSource::Build)?;
         blob_ctx.blob_meta_info_enabled = true;
         let blob_writer = ArtifactWriter::new(crate::ArtifactStorage::FileDir(
