@@ -565,17 +565,14 @@ fn prepare_cmd_args(bti_string: &'static str) -> App {
                     ),
             )
             .arg(
-                Arg::new("new-bootstrap")
-                    .long("new-bootstrap")
-                    .short('N')
-                    .help("Output path of the new bootstrap"),
+                Arg::new("output-bootstrap")
+                    .long("output-bootstrap")
+                    .short('O')
+                    .help("Output path of optimized bootstrap"),
             )
             .arg(
-                Arg::new("output-path")
-                    .long("output-path")
-                    .short('o')
-                    .help("Output path of for save hot blob id"),
-            ),
+                arg_output_json.clone(),
+            )
     );
 
     #[cfg(target_os = "linux")]
@@ -926,7 +923,7 @@ fn main() -> Result<()> {
     } else if let Some(matches) = cmd.subcommand_matches("unpack") {
         Command::unpack(matches)
     } else if let Some(matches) = cmd.subcommand_matches("optimize") {
-        Command::optimize(matches)
+        Command::optimize(matches, &build_info)
     } else {
         #[cfg(target_os = "linux")]
         if let Some(matches) = cmd.subcommand_matches("export") {
@@ -1685,13 +1682,16 @@ impl Command {
         Ok(())
     }
 
-    fn optimize(matches: &ArgMatches) -> Result<()> {
+    fn optimize(matches: &ArgMatches, build_info: &BuildTimeInfo) -> Result<()> {
         let blobs_dir_path = Self::get_blobs_dir(matches)?;
         let prefetch_files = Self::get_prefetch_files(matches)?;
         prefetch_files.iter().for_each(|f| println!("{}", f));
         let bootstrap_path = Self::get_bootstrap(matches)?;
-        let new_bootstrap = Self::get_new_bootstrap(matches)?;
-        let output_path = Self::get_output_path(matches)?;
+        let dst_bootstrap = match matches.get_one::<String>("output-bootstrap") {
+            None => ArtifactStorage::SingleFile(PathBuf::from("optimized_bootstrap")),
+            Some(s) => ArtifactStorage::SingleFile(PathBuf::from(s)),
+        };
+
         let config = Self::get_configuration(matches)?;
         config.internal.set_blob_accessible(true);
         let mut build_ctx = BuildContext {
@@ -1712,13 +1712,7 @@ impl Command {
             }
         }
 
-        let bootstrap_path = if let Some(ref f) = new_bootstrap {
-            ArtifactStorage::SingleFile(PathBuf::from(f))
-        } else {
-            ArtifactStorage::SingleFile(PathBuf::from("optimized_bootstrap"))
-        };
-
-        let mut bootstrap_mgr = BootstrapManager::new(Some(bootstrap_path), None);
+        let mut bootstrap_mgr = BootstrapManager::new(Some(dst_bootstrap), None);
         let blobs = sb.superblock.get_blob_infos();
 
         let mut blob_table = match build_ctx.fs_version {
@@ -1729,18 +1723,23 @@ impl Command {
 
             RafsVersion::V6 => RafsBlobTable::V6(RafsV6BlobTable { entries: blobs }),
         };
-        OptimizePrefetch::generate_prefetch(
+        let output = OptimizePrefetch::generate_prefetch(
             &mut tree,
             &mut build_ctx,
             &mut bootstrap_mgr,
             &mut blob_table,
             blobs_dir_path.to_path_buf(),
             prefetch_nodes,
-            output_path,
         )
         .with_context(|| "Failed to generate prefetch bootstrap")?;
 
-        Ok(())
+        OutputSerializer::dump(
+            matches,
+            output,
+            build_info,
+            build_ctx.compressor,
+            build_ctx.fs_version,
+        )
     }
 
     fn inspect(matches: &ArgMatches) -> Result<()> {
@@ -1850,13 +1849,6 @@ impl Command {
         }
     }
 
-    fn get_new_bootstrap(matches: &ArgMatches) -> Result<Option<&Path>> {
-        match matches.get_one::<String>("new-bootstrap") {
-            Some(s) => Ok(Some(Path::new(s))),
-            None => Ok(None),
-        }
-    }
-
     fn get_prefetch_files(matches: &ArgMatches) -> Result<Vec<String>> {
         match matches.get_one::<String>("prefetch-files") {
             Some(v) => {
@@ -1873,13 +1865,6 @@ impl Command {
                 Ok(prefetch_files)
             }
             None => bail!("missing parameter `prefetch-files`"),
-        }
-    }
-
-    fn get_output_path(matches: &ArgMatches) -> Result<Option<&Path>> {
-        match matches.get_one::<String>("output-path") {
-            Some(s) => Ok(Some(Path::new(s))),
-            None => Ok(None),
         }
     }
 

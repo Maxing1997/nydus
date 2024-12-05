@@ -8,6 +8,7 @@ use crate::BlobManager;
 use crate::Bootstrap;
 use crate::BootstrapManager;
 use crate::BuildContext;
+use crate::BuildOutput;
 use crate::ChunkSource;
 use crate::ConversionType;
 use crate::NodeChunk;
@@ -26,7 +27,7 @@ use nydus_storage::meta::BatchContextGenerator;
 use nydus_storage::meta::BlobChunkInfoV1Ondisk;
 use nydus_utils::compress;
 use sha2::Digest;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::mem::size_of;
 use std::sync::Arc;
@@ -74,8 +75,7 @@ impl OptimizePrefetch {
         blob_table: &mut RafsBlobTable,
         blobs_dir_path: PathBuf,
         prefetch_nodes: Vec<TreeNode>,
-        output_path: Option<&Path>,
-    ) -> Result<()> {
+    ) -> Result<BuildOutput> {
         // create a new blob for prefetch layer
 
         let blob_layer_num = match blob_table {
@@ -95,21 +95,12 @@ impl OptimizePrefetch {
             )?;
         }
 
-        Self::dump_blob(ctx, blob_table, &mut blob_state)?;
+        let blob_mgr = Self::dump_blob(ctx, blob_table, &mut blob_state)?;
 
         debug!("prefetch blob id: {}", ctx.blob_id);
-        if let Some(ref f) = output_path {
-            let mut w = OpenOptions::new()
-                .truncate(true)
-                .create(true)
-                .write(true)
-                .open(f)
-                .with_context(|| format!("can not open output file {}", f.display()))?;
-            w.write_all(ctx.blob_id.as_bytes())?;
-        }
 
         Self::build_dump_bootstrap(tree, ctx, bootstrap_mgr, blob_table)?;
-        Ok(())
+        BuildOutput::new(&blob_mgr, &bootstrap_mgr.bootstrap_storage)
     }
 
     fn build_dump_bootstrap(
@@ -124,29 +115,6 @@ impl OptimizePrefetch {
         // Build bootstrap
         bootstrap.build(ctx, &mut bootstrap_ctx)?;
 
-        let entries = match blob_table {
-            RafsBlobTable::V5(table) => table.get_all(),
-            RafsBlobTable::V6(table) => table.get_all(),
-        };
-
-        // Verify and update prefetch blob
-        assert!(
-            entries
-                .iter()
-                .filter(|blob| blob.blob_id() == "prefetch-blob")
-                .count()
-                == 1,
-            "Expected exactly one prefetch-blob"
-        );
-        // Rewrite prefetch blob id
-        match blob_table {
-            RafsBlobTable::V5(table) => {
-                rewrite_blob_id(&mut table.entries, "prefetch-blob", ctx.blob_id.clone())
-            }
-            RafsBlobTable::V6(table) => {
-                rewrite_blob_id(&mut table.entries, "prefetch-blob", ctx.blob_id.clone())
-            }
-        }
         let blob_table_withprefetch = match blob_table {
             RafsBlobTable::V5(table) => RafsBlobTable::V5(table.clone()),
             RafsBlobTable::V6(table) => RafsBlobTable::V6(table.clone()),
@@ -164,7 +132,7 @@ impl OptimizePrefetch {
         ctx: &mut BuildContext,
         blob_table: &mut RafsBlobTable,
         blob_state: &mut PrefetchBlobState,
-    ) -> Result<()> {
+    ) -> Result<BlobManager> {
         match blob_table {
             RafsBlobTable::V5(table) => {
                 table.entries.push(blob_state.blob_info.clone().into());
@@ -190,7 +158,31 @@ impl OptimizePrefetch {
             .1
             .blob_id
             .clone();
-        Ok(())
+
+        let entries = match blob_table {
+            RafsBlobTable::V5(table) => table.get_all(),
+            RafsBlobTable::V6(table) => table.get_all(),
+        };
+
+        // Verify and update prefetch blob
+        assert!(
+            entries
+                .iter()
+                .filter(|blob| blob.blob_id() == "prefetch-blob")
+                .count()
+                == 1,
+            "Expected exactly one prefetch-blob"
+        );
+        // Rewrite prefetch blob id
+        match blob_table {
+            RafsBlobTable::V5(table) => {
+                rewrite_blob_id(&mut table.entries, "prefetch-blob", ctx.blob_id.clone())
+            }
+            RafsBlobTable::V6(table) => {
+                rewrite_blob_id(&mut table.entries, "prefetch-blob", ctx.blob_id.clone())
+            }
+        }
+        Ok(blob_mgr)
     }
 
     fn process_prefetch_node(
