@@ -1193,21 +1193,21 @@ func main() {
 
 				&cli.StringFlag{
 					Name:    "policy",
-					Value:   "separated-prefetch-blob",
+					Value:   "separated-blob-with-prefetch-files",
 					Usage:   "Specify the optimizing way",
 					EnvVars: []string{"OPTIMIZE_POLICY"},
 				},
 				&cli.StringFlag{
 					Name:     "prefetch-files",
 					Required: false,
-					Usage:    "Specify the prefetch files to build preftech blobs",
+					Usage:    "File path to include prefetch files for optimization",
 					EnvVars:  []string{"PREFETCH_FILES"},
 				},
 
 				&cli.StringFlag{
 					Name:    "work-dir",
 					Value:   "./tmp",
-					Usage:   "Working directory for image copy",
+					Usage:   "Working directory for image optimization",
 					EnvVars: []string{"WORK_DIR"},
 				},
 
@@ -1232,7 +1232,7 @@ func main() {
 					return errors.Wrap(err, "invalid --push-chunk-size option")
 				}
 				if pushChunkSize > 0 {
-					logrus.Infof("will copy layer with chunk size %s", c.String("push-chunk-size"))
+					logrus.Infof("will push layer with chunk size %s", c.String("push-chunk-size"))
 				}
 				opt := optimizer.Opt{
 					WorkDir:        c.String("work-dir"),

@@ -23,5 +23,5 @@ const (
 	LayerAnnotationUncompressed = "containerd.io/uncompressed"
 
 	LayerAnnotationNydusCommitBlobs  = "containerd.io/snapshot/nydus-commit-blobs"
-	LayerAnnotationNyudsPrefetchBlob = "containerd.io/snapshot/nydus-prefetch-blob"
+	LayerAnnotationNyudsPrefetchBlob = "containerd.io/snapshot/nydus-separated-blob-with-prefetch-files"
 )

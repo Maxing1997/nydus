@@ -2,6 +2,7 @@ package optimizer
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"strings"
@@ -18,16 +19,21 @@ func isSignalKilled(err error) bool {
 }
 
 type BuildOption struct {
-	BuilderPath       string
-	PrefetchFilesPath string
-	BootstrapPath     string
-	BlobDir           string
-	NewBootstrapPath  string
-	OutputPath        string
-	Timeout           *time.Duration
+	BuilderPath         string
+	PrefetchFilesPath   string
+	BootstrapPath       string
+	BlobDir             string
+	OutputBootstrapPath string
+	OutputJSONPath      string
+	Timeout             *time.Duration
+}
+
+type outputJSON struct {
+	Blobs []string `json:"blobs"`
 }
 
 func Build(option BuildOption) (string, error) {
+	outputJSONPath := option.OutputJSONPath
 	args := []string{
 		"optimize",
 		"--log-level",
@@ -38,10 +44,10 @@ func Build(option BuildOption) (string, error) {
 		option.BootstrapPath,
 		"--blob-dir",
 		option.BlobDir,
-		"--new-bootstrap",
-		option.NewBootstrapPath,
-		"--output-path",
-		option.OutputPath,
+		"--output-bootstrap",
+		option.OutputBootstrapPath,
+		"--output-json",
+		outputJSONPath,
 	}
 
 	ctx := context.Background()
@@ -65,10 +71,16 @@ func Build(option BuildOption) (string, error) {
 		return "", errors.Wrap(err, "run merge command")
 	}
 
-	BlobID, err := os.ReadFile(option.OutputPath)
+	outputBytes, err := os.ReadFile(outputJSONPath)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to read blob id file")
+		return "", errors.Wrapf(err, "read file %s", outputJSONPath)
 	}
+	var output outputJSON
+	err = json.Unmarshal(outputBytes, &output)
+	if err != nil {
+		return "", errors.Wrapf(err, "unmarshal output json file %s", outputJSONPath)
+	}
+	BlobID := output.Blobs[len(output.Blobs)-1]
 
 	logrus.Infof("build success for prefetch blob : %s", BlobID)
 	return string(BlobID), nil

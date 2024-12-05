@@ -1,4 +1,4 @@
-// Copyright 2023 Nydus Developers. All rights reserved.
+// Copyright 2024 Nydus Developers. All rights reserved.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -232,7 +232,7 @@ func fetchBlobs(ctx context.Context, opt Opt, buildDir string) error {
 	return nil
 }
 
-// Optimize covert and push a new optimized nydus image
+// Optimize coverts and push a new optimized nydus image
 func Optimize(ctx context.Context, opt Opt) error {
 	ctx = namespaces.WithNamespace(ctx, "nydusify")
 
@@ -241,7 +241,7 @@ func Optimize(ctx context.Context, opt Opt) error {
 		return errors.Wrap(err, "Init source image parser")
 	}
 	sourceParser, err := parser.New(sourceRemote, runtime.GOARCH)
-	if sourceParser == nil {
+	if err != nil {
 		return errors.Wrap(err, "failed to create parser")
 	}
 
@@ -289,15 +289,15 @@ func Optimize(ctx context.Context, opt Opt) error {
 
 	compressAlgo := bootstrapDesc.Digest.Algorithm().String()
 	blobDir := filepath.Join(buildDir + "/content/blobs/" + compressAlgo)
-	outPutPath := filepath.Join(buildDir, "output-blob-id")
+	outPutJSONPath := filepath.Join(buildDir, "output.json")
 	newBootstrapPath := filepath.Join(buildDir, "optimized_bootstrap")
 	builderOpt := BuildOption{
-		BuilderPath:       opt.NydusImagePath,
-		PrefetchFilesPath: opt.PrefetchFilesPath,
-		BootstrapPath:     originalBootstrap,
-		BlobDir:           blobDir,
-		NewBootstrapPath:  newBootstrapPath,
-		OutputPath:        outPutPath,
+		BuilderPath:         opt.NydusImagePath,
+		PrefetchFilesPath:   opt.PrefetchFilesPath,
+		BootstrapPath:       originalBootstrap,
+		BlobDir:             blobDir,
+		OutputBootstrapPath: newBootstrapPath,
+		OutputJSONPath:      outPutJSONPath,
 	}
 	logrus.Infof("begin to build new prefetch blob and bootstrap")
 	start := time.Now()
@@ -358,7 +358,7 @@ func pushBlob(ctx context.Context, opt Opt, buildInfo BuildInfo) (*ocispec.Descr
 	return &blobDesc, nil
 }
 
-func pushCompoundBootstrap(ctx context.Context, opt Opt, buildInfo BuildInfo) (*bootstrapInfo, error) {
+func pushNewBootstrap(ctx context.Context, opt Opt, buildInfo BuildInfo) (*bootstrapInfo, error) {
 	remoter, err := remoter(opt)
 	if err != nil {
 		return nil, errors.Wrap(err, "create remote")
@@ -402,6 +402,7 @@ func pushCompoundBootstrap(ctx context.Context, opt Opt, buildInfo BuildInfo) (*
 	if err != nil {
 		return nil, errors.Wrap(err, "open bootstrap tar file")
 	}
+	defer bootstrapTarRa.Close()
 
 	bootstrapTarGzPath := filepath.Join(buildInfo.BuildDir, "bootstrap.tar.gz")
 	bootstrapTarGz, err := os.Create(bootstrapTarGzPath)
@@ -507,7 +508,7 @@ func pushNewImage(ctx context.Context, opt Opt, buildInfo BuildInfo) error {
 		return errors.Wrap(err, "create and push hot blob desc")
 	}
 
-	bootstrapInfo, err := pushCompoundBootstrap(ctx, opt, buildInfo)
+	bootstrapInfo, err := pushNewBootstrap(ctx, opt, buildInfo)
 	if err != nil {
 		return errors.Wrap(err, "create and push bootstrap desc")
 	}
